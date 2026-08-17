@@ -16,11 +16,33 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Create release from the tag
+        uses: actions/github-script@v9
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release create "${GITHUB_REF_NAME}"
-          --repo "${GITHUB_REPOSITORY}"
-          --title "CAD AI Renderer ${GITHUB_REF_NAME}"
-          --notes-file ".github/release-notes/v0.1.0.md"
-          --verify-tag
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_NOTES_FILE: .github/release-notes/v0.1.0.md
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const { owner, repo } = context.repo;
+            const tag = process.env.RELEASE_TAG;
+            const body = fs.readFileSync(process.env.RELEASE_NOTES_FILE, 'utf8');
+
+            try {
+              const existing = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+              core.info(`Release already exists: ${existing.data.html_url}`);
+            } catch (error) {
+              if (error.status !== 404) throw error;
+
+              const release = await github.rest.repos.createRelease({
+                owner,
+                repo,
+                tag_name: tag,
+                name: `CAD AI Renderer ${tag}`,
+                body,
+                draft: false,
+                prerelease: false,
+                generate_release_notes: false,
+              });
+              core.info(`Created release: ${release.data.html_url}`);
+            }
