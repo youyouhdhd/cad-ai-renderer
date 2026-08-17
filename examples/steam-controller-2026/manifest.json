@@ -1,0 +1,61 @@
+{
+  "example_id": "steam-controller-2026",
+  "checked_at": "2026-08-18",
+  "model": {
+    "path": "model/SC_solid_stp_20260429.stp",
+    "format": "STEP",
+    "sha256": "c892bdecaac4d5b04149ac1fbea4b0e2aa36ee784761da7c79cb3cd70f4428e9",
+    "source_url": "https://www.printables.com/model/1577616-steam-controller-2026-step-model-puck",
+    "source_license": "Creative Commons — Public Domain",
+    "source_license_note": "The model is a separate asset and is not relicensed by the repository MIT license."
+  },
+  "renders": [
+    {
+      "path": "renders/front/best.png",
+      "view": "front",
+      "kind": "representative_final",
+      "size": [1254, 1254],
+      "sha256": "564cf8651004e22a02ed08eb1f3c1cda263cdebe1b5f7a6e45774b0e3b6c1b8b"
+    },
+    {
+      "path": "renders/rear/best.png",
+      "view": "rear",
+      "kind": "representative_final",
+      "size": [1254, 1254],
+      "sha256": "83eb517dffff39e0cbb5f37fa689ff88927ecc6e636aee5e64f82c490a1fbb91"
+    },
+    {
+      "path": "renders/front/contact_sheet.png",
+      "view": "front",
+      "kind": "candidate_contact_sheet",
+      "size": [1600, 1732],
+      "sha256": "4d507ab9eae404153ca5ab1ff391a4a677cc1cc10f982489d61d68b95cec51e9"
+    },
+    {
+      "path": "renders/rear/contact_sheet.png",
+      "view": "rear",
+      "kind": "candidate_contact_sheet",
+      "size": [1072, 1160],
+      "sha256": "ea769a1e84f5e42aca3afb3bc4921b1b28a1dafd529735c83395ed3cc4cd3c29"
+    }
+  ],
+  "auxiliary_passes": {
+    "views": ["front", "rear"],
+    "files": [
+      "clay.png",
+      "color_preview.png",
+      "depth.png",
+      "lineart.png",
+      "mask.png",
+      "normal.png",
+      "part_id.png",
+      "view_grid.png"
+    ],
+    "note": "All auxiliary maps are 1024x1024 except view_grid.png, which is 1360x1512. They are structural evidence, not final beauty renders."
+  },
+  "privacy_review": {
+    "absolute_workstation_paths_removed": true,
+    "credentials_or_private_keys_found": false,
+    "cad_person_or_organization_fields": "UNSPECIFIED"
+  }
+}

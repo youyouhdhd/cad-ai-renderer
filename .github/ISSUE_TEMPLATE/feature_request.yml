@@ -1,0 +1,29 @@
+name: Feature request / 功能请求
+description: Propose a focused improvement / 提议一个聚焦的改进
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Keep the host image-generation boundary explicit and avoid requests for credentials.
+        请保持宿主生图边界清晰，不要提出收集凭据的方案。
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / 问题
+      description: What user or maintainer problem does this solve? / 解决什么用户或维护者问题？
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal / 方案
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and trade-offs / 替代方案与取舍
+    validations:
+      required: true

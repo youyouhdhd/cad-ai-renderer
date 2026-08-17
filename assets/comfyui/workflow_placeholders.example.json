@@ -1,0 +1,11 @@
+{
+  "purpose": "Document the literal placeholder strings accepted by scripts/comfyui_api.py.",
+  "placeholders": {
+    "__LINEART_IMAGE__": "Use as the image filename in a LoadImage node for the CAD lineart.",
+    "__DEPTH_IMAGE__": "Use as the image filename in a LoadImage node for the CAD depth map.",
+    "__COLOR_PREVIEW_IMAGE__": "Use as the image filename in a LoadImage node for the shaded CAD preview.",
+    "__PROMPT__": "Use as the positive prompt text.",
+    "__OUTPUT_PREFIX__": "Use as the SaveImage filename prefix."
+  },
+  "note": "Export the real ComfyUI graph in API format, place these literal strings in the appropriate node inputs, and set comfyui.workflow to that JSON file."
+}

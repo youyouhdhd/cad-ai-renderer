@@ -1,0 +1,8 @@
+PyYAML>=6.0
+numpy>=1.26
+Pillow>=10.0
+opencv-python-headless>=4.8
+requests>=2.31
+trimesh>=4.0
+cadquery>=2.6,<3
+vtk>=9.3

@@ -1,0 +1,27 @@
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# Local CAD/render runs; curated examples are explicitly tracked
+/runs/
+/output/
+/cad-ai-render-output/
+/cad-commercial-render/
+*.log
+
+# Local editor and OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Temporary conversion/interchange files
+*.tmp
+*.bak
+*.swp

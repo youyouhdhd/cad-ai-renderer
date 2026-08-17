@@ -1,0 +1,43 @@
+name: Bug report / Bug 报告
+description: Report a reproducible problem / 报告可复现的问题
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Remove credentials, personal data, private CAD, host-only prompts, and absolute workstation paths before submitting.
+        提交前请删除凭据、个人信息、私有 CAD、宿主私有提示词和工作站绝对路径。
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary / 摘要
+      description: What happened? / 发生了什么？
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment / 环境
+      description: OS, Python version, dependency mode, and input format. / 操作系统、Python 版本、依赖模式和输入格式。
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command and sanitized logs / 命令与脱敏日志
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior / 预期行为
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior / 实际行为
+    validations:
+      required: true

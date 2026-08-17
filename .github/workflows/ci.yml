@@ -1,0 +1,89 @@
+name: Quality checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install lightweight validation dependency
+        run: python -m pip install --disable-pip-version-check --quiet pyyaml
+
+      - name: Parse Python sources
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+
+          for path in Path("scripts").glob("*.py"):
+              ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+          print("Python syntax: OK")
+          PY
+
+      - name: Parse JSON and YAML examples
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import yaml
+
+          for path in Path(".").rglob("*.json"):
+              if "__pycache__" not in path.parts:
+                  json.loads(path.read_text(encoding="utf-8"))
+          for path in [Path("assets/project.example.yaml"), Path("agents/openai.yaml")]:
+              yaml.safe_load(path.read_text(encoding="utf-8"))
+          print("JSON/YAML: OK")
+          PY
+
+      - name: Check for local paths and obvious secrets
+        run: |
+          python - <<'PY'
+          import re
+          from pathlib import Path
+
+          patterns = [
+              re.compile(r"(?i)C:\\\\Users\\\\[^\\\\\s]+"),
+              re.compile(r"(?i)/home/[^/\s]+"),
+              re.compile(r"(?i)-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
+              re.compile(r"(?i)\bghp_[A-Za-z0-9]{20,}\b"),
+              re.compile(r"(?i)\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
+              re.compile(r"(?i)\bAKIA[0-9A-Z]{16}\b"),
+          ]
+          allowed_binary = {".png", ".jpg", ".jpeg", ".webp", ".stp", ".step", ".stl", ".glb", ".obj"}
+          documentation_examples = {
+              Path("README.md"),
+              Path("README.zh-CN.md"),
+              Path(".github/workflows/ci.yml"),
+          }
+          hits = []
+          for path in Path(".").rglob("*"):
+              if not path.is_file() or "__pycache__" in path.parts:
+                  continue
+              if path in documentation_examples:
+                  continue
+              if path.suffix.lower() in allowed_binary:
+                  data = path.read_bytes()
+                  text = data.decode("latin-1", errors="ignore")
+              else:
+                  text = path.read_text(encoding="utf-8", errors="ignore")
+              for pattern in patterns:
+                  if pattern.search(text):
+                      hits.append(str(path))
+                      break
+          if hits:
+              raise SystemExit("Sensitive path/secret pattern found: " + ", ".join(hits))
+          print("Privacy scan: OK")
+          PY

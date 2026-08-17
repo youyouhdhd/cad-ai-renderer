@@ -1,0 +1,16 @@
+interface:
+  display_name: CAD AI Renderer
+  short_description: Turn attached STEP CAD and references into geometry-anchored
+    AI renders
+  default_prompt: Use the attached CAD model and any attached reference images. Self-initialize
+    the managed CAD environment, prepare deterministic geometry anchors, generate
+    four candidates with the official image-generation capability, stage them without
+    making a provisional selection, perform visual geometry QA, finalize the best
+    image, and return the auxiliary passes, contact sheet, and report.
+policy:
+  products:
+  - chatgpt
+  - codex
+  - api
+  - atlas
+  allow_implicit_invocation: true

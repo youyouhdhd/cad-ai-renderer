@@ -1,0 +1,64 @@
+# Optional advanced configuration. Normal skill use discovers conversation attachments
+# and generates this structure internally; users do not need to author this file.
+project:
+  name: premium-product-render
+  input_model: ./model.step
+  output_dir: ./output
+  description: >-
+    Create a premium photoreal studio product image. Preserve the CAD camera,
+    silhouette, proportions, visible topology, and part placement. Use attached
+    images only for reliable material, color, lighting, style, and camera evidence.
+  references:
+    - path: ./reference.jpg
+      roles: [mixed]
+      notes: Roles are normally inferred automatically by the host model.
+
+camera:
+  mode: auto                 # auto, reference, manual
+  projection: perspective    # perspective, orthographic
+  azimuth: 35
+  elevation: 22
+  roll: 0
+  fov_deg: 45
+  framing: 0.82
+  position: null
+  target: null
+  up: [0, 0, 1]
+  view_grid_azimuths: [0, 45, 90, 135, 180, 225, 270, 315]
+  view_grid_elevations: [15, 30]
+
+geometry:
+  converter: auto            # auto, cadquery, freecad, passthrough
+  linear_tolerance: 0.2
+  angular_tolerance: 0.1
+  color_mode: auto           # auto, original, pseudo, clay
+  anchor_mode: balanced      # compact, balanced, max_geometry
+  up_axis: z
+  repair: true
+
+render:
+  aux_backend: auto          # auto currently resolves to vtk
+  width: 1024
+  height: 1024
+  background_rgb: [0.94, 0.94, 0.94]
+  transparent_aux: false
+
+generation:
+  candidates: 4
+  aspect_ratio: "1:1"
+  quality: high              # auto, draft, standard, high
+  output_format: png
+  max_retries: 1
+
+qa:
+  min_geometry_score: 75
+  local_weight: 0.35
+  visual_weight: 0.65
+  max_edge_distance_px: 18
+  retry_on_geometry_drift: true
+
+comfyui:
+  enabled: false
+  server_url: http://127.0.0.1:8188
+  workflow: null
+  timeout_seconds: 900
