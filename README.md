@@ -8,6 +8,10 @@ Geometry-anchored AI product rendering from STEP/STP or supported mesh inputs.
 
 CAD AI Renderer prepares trustworthy geometry evidence, delegates the beauty-render step to the host's official image-generation capability, and keeps local diagnostics separate from the final visual decision. It is designed for product visualization, camera matching, material exploration, and reproducible CAD-to-image handoffs.
 
+## Why this matters
+
+AI image generation can make a product look plausible while quietly drifting from CAD: hole locations, silhouette, part count, seams, and proportions are easy to lose. CAD AI Renderer turns the model into deterministic, inspectable geometry evidence and a structured, auditable generation handoff, so appearance exploration is flexible without silently becoming the source of truth for geometry.
+
 ## What it does
 
 - Discovers a model and optional reference images directly from attachment-style paths.
