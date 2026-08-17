@@ -64,6 +64,7 @@ The run directory is the persistence boundary. A normal run is portable when its
 4. **Two-stage camera selection.** A deterministic grid is generated before a final camera is accepted, reducing accidental camera drift.
 5. **Stage before finalize.** Candidates are copied into stable run-owned locations and locally ranked before visual QA. Staging alone never writes the final image.
 6. **One targeted retry.** Geometry recovery is bounded. A failed guard must not become an unlimited generation loop.
+7. **Reference target without a model lock.** GPT Image 2 is the primary reference target for product-image evaluation when available, while the host handoff remains model-neutral and the package never embeds an image API client or credential.
 
 ### Failure modes
 
@@ -153,6 +154,7 @@ The run directory is the persistence boundary. A normal run is portable when its
 4. **两阶段相机。** 先生成确定性视角网格，再接受最终相机，减少视角漂移。
 5. **先暂存后定稿。** 候选图先复制到运行目录并做本地诊断；暂存阶段永远不写最终图。
 6. **最多一次定向重试。** 几何恢复是有上限的，失败后不能变成无限生图循环。
+7. **有参考目标但不锁定模型。** 在宿主提供时，GPT Image 2 是产品效果图评估的主要参考目标；宿主交接仍保持模型中立，包内不嵌入生图 API 客户端或凭据。
 
 ### 失败模式
 

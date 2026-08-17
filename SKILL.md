@@ -1,13 +1,13 @@
 ---
 name: cad-ai-renderer
-description: Turn an attached STEP/STP CAD model or supported mesh plus zero or more attached reference images into geometry-anchored AI product renders. Use for photoreal product visualization, commercial material/color/lighting inference, camera matching, four-candidate generation, best-image selection, or CAD passes such as lineart, mask, clay, normal, depth, and part ID, including first runs after moving the Skill to another Windows or Linux environment. Discover attachments automatically, self-initialize a dedicated CAD/VTK Python environment, use 3D only as deterministic geometry evidence, and delegate final rendering to the host's official image-generation skill or tool rather than a raw API client.
+description: Generate geometry-anchored industrial product renders from an attached STEP/STP CAD model or supported mesh plus optional reference images as a reusable Codex Skill. Use when Codex must inspect CAD geometry, create deterministic camera, silhouette, clay, line-art, depth, normal, and part-ID evidence, then guide GPT Image 2 or another host image-generation capability through candidate product visualization, camera matching, visual QA, and final selection while preserving visible proportions, topology, holes, seams, and part placement. Discover attachments automatically, self-initialize a dedicated CAD/VTK Python environment, use 3D only as geometry evidence, and delegate final rendering to the host rather than a raw API client.
 ---
 
 # CAD AI Renderer
 
 ## Core contract
 
-Treat the current host conversation model as the planner and visual judge. Do not add model IDs, model locks, routing restrictions, or reasoning-mode requirements to this skill.
+Treat the current host conversation model as the planner and visual judge. Keep runtime execution model-neutral: do not add model IDs, model locks, routing restrictions, or reasoning-mode requirements to the Skill contract. Public documentation may name GPT Image 2 as a reference target, but execution must continue to use the host's currently supported official image-generation capability.
 
 Use the host's official image-generation skill or tool for final images. Prefer the official `imagegen` skill when it is exposed. Otherwise use the host's official image-generation tool. Do not call a raw image API from bundled Python, do not request an API key, and do not substitute a third-party generator silently.
 

@@ -3,14 +3,51 @@
 [![CI](https://github.com/youyouhdhd/cad-ai-renderer/actions/workflows/ci.yml/badge.svg)](https://github.com/youyouhdhd/cad-ai-renderer/actions/workflows/ci.yml)
 [![代码许可：MIT](https://img.shields.io/badge/code%20license-MIT-yellow.svg)](LICENSE)
 [English](README.md)
+[路线图](ROADMAP.md)
 
-从 STEP/STP 或支持的网格模型出发，生成以几何证据为锚点的 AI 产品渲染流程。
+面向 Codex 的开源 Skill：从 STEP/STP 或支持的网格模型出发，生成以几何证据为锚点的 CAD 到产品可视化流程，并以 [GPT Image 2](https://developers.openai.com/api/docs/guides/image-generation) 作为主要参考目标。
 
-CAD AI Renderer 先准备可信的三维几何证据，再把商业效果图生成交给宿主环境的官方生图能力，并把本地诊断与最终视觉判断分开。它适用于产品可视化、相机匹配、材质探索以及可复现的 CAD 到图像交接。
+CAD AI Renderer 为 Codex 提供可复现的工作流：把 STEP/STP 和支持的网格文件转化为确定性的 CAD 证据，再通过宿主官方生图能力引导高质量产品可视化。当宿主提供 GPT Image 2 时，它是主要的效果图合成参考目标；Skill 本身仍保持模型中立，不调用原始生图 API、不要求 API Key，也不硬编码模型 ID。
 
 ## 为什么重要
 
 AI 生图可以让产品“看起来合理”，却很容易悄悄偏离 CAD：孔位、轮廓、零件数量、接缝和比例都可能漂移。CAD AI Renderer 把模型转化为确定、可检查的几何证据，并提供结构化、可审计的生成交接层，让外观探索保持灵活，同时不让生成图像悄悄取代几何事实来源。
+
+## 为什么要做成 Skill？
+
+CAD 到图像不是一句提示词就能完成的任务，而是一条可重复的 Agent 工作流：发现附件、准备依赖、转换几何、选择相机、生成辅助通道、构造提示词、比较候选图、检查几何并最终定稿。
+
+把这条流程封装成 Codex Skill，可以让行为可复用、可检查、可测试。仓库把确定性的 CAD 证据层与由宿主控制的生成式图像层分开，因此生图模型的可用性变化不会悄悄改变几何合同。
+
+## 面向 Codex + GPT Image 2 的工作方式
+
+Codex 负责围绕 CAD 证据、参考图、渲染意图、候选生成和视觉复核进行多步骤编排；确定性管线准备结构证据；宿主官方生图能力负责视觉合成。
+
+```text
+STEP / STP / 网格模型
+        │
+        ▼
+      Codex
+        │
+        ▼
+CAD AI Renderer Skill
+        │
+        ├── 模型发现与转换
+        ├── 相机选择与几何预览
+        ├── 轮廓 / 线稿 / 深度 / 法线证据
+        └── 部件 ID、拓扑、孔洞、接缝和比例检查
+        │
+        ▼
+结构化生图交接
+        │
+        ▼
+GPT Image 2 或宿主支持的其他官方生图能力
+        │
+        ▼
+候选暂存 → 视觉 QA → 选定最终图
+```
+
+GPT Image 2 可以负责材质、灯光、反射、环境和展示质量；CAD 证据仍是可审计的结构参考，最终商业效果图仍属于结构引导的近似结果，而不是尺寸级 CAD 验证产物。
 
 ## 功能范围
 
@@ -65,6 +102,20 @@ AI 生图可以让产品“看起来合理”，却很容易悄悄偏离 CAD：�
 | `.glb`、`.gltf`、`.obj`、`.stl`、`.ply`、`.3mf` | 转换成功时支持的网格模型 |
 | `.png`、`.jpg`、`.jpeg`、`.webp`、`.bmp`、`.tif`、`.tiff` | 可选材质、灯光、风格或相机参考图 |
 | 自然语言意图 | 由宿主或用户提供的渲染要求 |
+
+## 作为 Codex Skill 使用
+
+本仓库设计为可安装、可复用的 `$cad-ai-renderer` Skill。向 Codex 提供：
+
+1. 一个 STEP/STP 或支持的网格模型；
+2. 可选的材质、灯光、相机或风格参考图；
+3. 一段自然语言渲染要求。
+
+Skill 会准备确定性的 CAD 证据和结构化交接文件。当宿主提供 GPT Image 2 时，它是效果图合成的主要参考目标；否则仍由宿主支持的官方生图能力承担交接边界。
+
+示例请求：
+
+> 使用 `$cad-ai-renderer` 处理这个 STEP 文件。保留原始轮廓、比例、孔洞、接缝、可见拓扑和部件位置。使用 GPT Image 2 生成四张高级工作室产品效果图候选，结合 CAD 证据进行比较，并在视觉 QA 后选出最优结果。
 
 ## 快速开始
 
@@ -129,6 +180,8 @@ python scripts/run.py finalize `
 
 Python 包只负责结构化交接；商业效果图由宿主环境的官方生图 Skill 或工具生成。`planning/imagegen_request.json`、`planning/input_roles.json` 和 `planning/final_prompt.txt` 描述交接内容，但不嵌入模型锁定或 API 凭据。
 
+GPT Image 2 是集成目标和评估参考，不是随仓库打包的依赖。本仓库不会直接调用 OpenAI Images API，从而把凭据、模型可用性和宿主策略留在 Skill 包之外。
+
 如果宿主生图能力不可用，应返回准备包和提示词，而不是静默切换后端。ComfyUI 只是可选的本地几何守卫，不是宿主视觉决策边界的替代品。
 
 ## 仓库结构
@@ -141,6 +194,7 @@ references/                      安装、Schema、流程和排障文档
 assets/                          可选项目与 ComfyUI 模板
 docs/                            公开架构、开发和可复现性文档
 examples/steam-controller-2026/  脱敏后的模型和输出示例
+ROADMAP.md                      公开的可靠性、评估和 Skill 体验路线图
 .github/                         CI、Issue 表单和贡献模板
 ```
 
@@ -149,6 +203,21 @@ examples/steam-controller-2026/  脱敏后的模型和输出示例
 `examples/steam-controller-2026/` 用于让流程可以直接理解和复现。模型文件来自用户提供的 `SC_solid_stp_20260429.stp`，对应 Printables 条目 [Steam Controller 2026 STEP model + puck](https://www.printables.com/model/1577616-steam-controller-2026-step-model-puck)。该条目当前公开元数据标注模型许可为 **Creative Commons — Public Domain**。具体范围与说明见示例目录中的 `README.md` 和 `THIRD_PARTY_NOTICES.md`。
 
 示例效果图和确定性的辅助图是演示产物，不代表 AI 生成图像具有尺寸级 CAD 精确性。
+
+## 公开视觉示例
+
+已提交的 Steam Controller 示例展示了一条完整的“几何证据到产品图”路径，同时没有发布工作站清单或宿主凭据：
+
+| 阶段 | 公开产物 |
+| --- | --- |
+| 源 CAD | [STEP 模型](examples/steam-controller-2026/model/SC_solid_stp_20260429.stp) |
+| 前视候选图 | [联系表](examples/steam-controller-2026/renders/front/contact_sheet.png) |
+| 前视定稿图 | [代表性效果图](examples/steam-controller-2026/renders/front/best.png) |
+| 前视几何证据 | [相机网格与辅助通道](examples/steam-controller-2026/renders/front/auxiliary/) |
+| 后视定稿图 | [代表性效果图](examples/steam-controller-2026/renders/rear/best.png) |
+| 后视几何证据 | [相机网格与辅助通道](examples/steam-controller-2026/renders/rear/auxiliary/) |
+
+这个示例把边界直接展示出来：CAD 模型和辅助图是确定性的证据，而商业效果图是参考输出，重复执行宿主生图阶段时可能发生变化。
 
 ## 验证
 

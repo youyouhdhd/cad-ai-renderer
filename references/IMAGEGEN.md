@@ -6,6 +6,8 @@ The local package prepares geometry evidence and a production prompt. The host's
 
 Do not implement a hidden HTTP client in this package. Do not ask the user for an image API key. Do not hardcode a model identifier; allow the official host capability to use its supported image model.
 
+GPT Image 2 is the primary reference target for high-quality product visualization when the host exposes it. It is an integration and evaluation target, not a bundled dependency: this package remains model-neutral and does not call the OpenAI Images API directly.
+
 ## Invocation inputs
 
 Read `planning/imagegen_request.json` and `planning/host_handoff.json`. It contains:

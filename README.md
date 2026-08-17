@@ -3,14 +3,51 @@
 [![CI](https://github.com/youyouhdhd/cad-ai-renderer/actions/workflows/ci.yml/badge.svg)](https://github.com/youyouhdhd/cad-ai-renderer/actions/workflows/ci.yml)
 [![Code license: MIT](https://img.shields.io/badge/code%20license-MIT-yellow.svg)](LICENSE)
 [简体中文](README.zh-CN.md)
+[Roadmap](ROADMAP.md)
 
-Geometry-anchored AI product rendering from STEP/STP or supported mesh inputs.
+Open-source Codex Skill for geometry-anchored CAD-to-product visualization, with [GPT Image 2](https://developers.openai.com/api/docs/guides/image-generation) as a primary reference target.
 
-CAD AI Renderer prepares trustworthy geometry evidence, delegates the beauty-render step to the host's official image-generation capability, and keeps local diagnostics separate from the final visual decision. It is designed for product visualization, camera matching, material exploration, and reproducible CAD-to-image handoffs.
+CAD AI Renderer gives Codex a reproducible workflow for turning STEP/STP and supported mesh files into deterministic CAD evidence, then using that evidence to guide high-quality product visualization through the host image-generation capability. GPT Image 2 is the primary reference target when the host exposes it; the Skill itself remains model-neutral and does not call a raw image API, require an API key, or hard-code a model ID.
 
 ## Why this matters
 
 AI image generation can make a product look plausible while quietly drifting from CAD: hole locations, silhouette, part count, seams, and proportions are easy to lose. CAD AI Renderer turns the model into deterministic, inspectable geometry evidence and a structured, auditable generation handoff, so appearance exploration is flexible without silently becoming the source of truth for geometry.
+
+## Why a Skill?
+
+CAD-to-image rendering is not a single prompt. It is a repeatable agent workflow involving attachment discovery, dependency setup, geometry conversion, camera selection, auxiliary rendering, prompt construction, candidate comparison, geometry review, and final selection.
+
+Packaging that process as a Codex Skill keeps the behavior reusable, inspectable, and testable. The repository separates the deterministic CAD evidence layer from the host-controlled generative image layer, so a change in image-model availability does not silently change the geometry contract.
+
+## Designed for Codex + GPT Image 2
+
+Codex orchestrates the multi-step workflow and reasoning around CAD evidence, references, rendering intent, candidate generation, and visual review. The deterministic pipeline prepares the structural evidence; the host image-generation capability performs visual synthesis.
+
+```text
+STEP / STP / mesh
+        │
+        ▼
+      Codex
+        │
+        ▼
+CAD AI Renderer Skill
+        │
+        ├── model discovery and conversion
+        ├── camera selection and geometry previews
+        ├── silhouette / lineart / depth / normal evidence
+        └── part-ID, topology, hole, seam, and proportion checks
+        │
+        ▼
+structured image-generation handoff
+        │
+        ▼
+GPT Image 2 or another host-supported image capability
+        │
+        ▼
+candidate staging → visual QA → selected final image
+```
+
+GPT Image 2 can provide materials, lighting, reflections, environment, and presentation quality. The CAD evidence remains the auditable structural reference; the generated beauty image remains a structure-guided approximation, not a dimensional CAD verification artifact.
 
 ## What it does
 
@@ -65,6 +102,20 @@ The canonical run layout is `auxiliary/`, `planning/`, `candidates/`, and `final
 | `.glb`, `.gltf`, `.obj`, `.stl`, `.ply`, `.3mf` | Supported mesh inputs when conversion succeeds |
 | `.png`, `.jpg`, `.jpeg`, `.webp`, `.bmp`, `.tif`, `.tiff` | Optional material, lighting, style, or camera references |
 | Natural-language intent | Rendering brief supplied by the host/user |
+
+## Using it as a Codex Skill
+
+This repository is designed to be installed and invoked as the reusable `$cad-ai-renderer` Skill. Give Codex:
+
+1. a STEP/STP or supported mesh model;
+2. optional material, lighting, camera, or style references; and
+3. a natural-language rendering brief.
+
+The Skill prepares deterministic CAD evidence and a structured handoff. When the host exposes GPT Image 2, it is the primary reference target for beauty-image synthesis; otherwise the host-supported official image capability remains the boundary.
+
+Example request:
+
+> Use `$cad-ai-renderer` with this STEP file. Preserve the original silhouette, proportions, holes, seams, visible topology, and part placement. Create four premium studio product-render candidates with GPT Image 2, compare them against the CAD evidence, and select the strongest result after visual QA.
 
 ## Quick start
 
@@ -129,6 +180,8 @@ The final run contains `final/best.png`, `final/selection.json`, and `final/repo
 
 The Python package stops at a structured handoff. The host's official image-generation skill or tool is responsible for beauty-image synthesis. `planning/imagegen_request.json`, `planning/input_roles.json`, and `planning/final_prompt.txt` describe the handoff without embedding a model lock or API credential.
 
+GPT Image 2 is an integration target and evaluation reference, not a bundled dependency. The repository does not directly invoke the OpenAI Images API; this keeps credentials, model availability, and host policy outside the Skill package.
+
 If the host capability is unavailable, return the preparation bundle and prompt instead of silently switching to another backend. ComfyUI is an optional local geometry guard, not a substitute for the host decision boundary.
 
 ## Repository layout
@@ -141,6 +194,7 @@ references/                      Installation, schema, pipeline, and troubleshoo
 assets/                          Optional project and ComfyUI templates
 docs/                            Public architecture, development, and reproducibility docs
 examples/steam-controller-2026/  Sanitized model and output example
+ROADMAP.md                      Public reliability, evaluation, and Skill-experience roadmap
 .github/                         CI, issue forms, and contribution templates
 ```
 
@@ -149,6 +203,21 @@ examples/steam-controller-2026/  Sanitized model and output example
 The example under `examples/steam-controller-2026/` is included to make the workflow concrete. The model file is the user-supplied `SC_solid_stp_20260429.stp`, associated with the Printables listing [Steam Controller 2026 STEP model + puck](https://www.printables.com/model/1577616-steam-controller-2026-step-model-puck). The listing currently identifies the model license as **Creative Commons — Public Domain**. See the example's `README.md` and `THIRD_PARTY_NOTICES.md` for scope and attribution notes.
 
 The example render images and deterministic auxiliary maps are demonstration artifacts. They are not claims that an AI-generated image is a dimensionally exact CAD representation.
+
+## Public visual example
+
+The committed Steam Controller example shows one complete evidence-to-image path without publishing workstation manifests or host credentials:
+
+| Stage | Public artifact |
+| --- | --- |
+| Source CAD | [STEP model](examples/steam-controller-2026/model/SC_solid_stp_20260429.stp) |
+| Front candidates | [contact sheet](examples/steam-controller-2026/renders/front/contact_sheet.png) |
+| Front selected image | [representative render](examples/steam-controller-2026/renders/front/best.png) |
+| Front geometry evidence | [camera grid and auxiliary passes](examples/steam-controller-2026/renders/front/auxiliary/) |
+| Rear selected image | [representative render](examples/steam-controller-2026/renders/rear/best.png) |
+| Rear geometry evidence | [camera grid and auxiliary passes](examples/steam-controller-2026/renders/rear/auxiliary/) |
+
+The example makes the intended boundary visible: the CAD model and auxiliary maps are deterministic evidence, while the beauty renders are reference outputs that may vary when the host image-generation stage is repeated.
 
 ## Validation
 
