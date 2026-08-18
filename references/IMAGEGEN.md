@@ -28,7 +28,20 @@ Preserve the image order. Include each role in the prompt so the generator knows
 
 ## Output strategy
 
-Prefer the official `$imagegen` Skill and a single multi-output invocation per view when supported. Otherwise use four equivalent invocations per view. Keep prompt and input order constant; natural stochastic variation supplies candidate diversity. For a default multi-view run, keep each camera bundle independent and never generate a collage as a substitute for separate views.
+Prefer the official `$imagegen` Skill and follow the confirmed `generation_plan.views` exactly. The
+default reference plan may contain fourteen deterministic views, but those references do not multiply
+the final-image budget:
+
+- without a specified output view, generate exactly four final candidates total—front, back, left,
+  and one upper axonometric;
+- with a specified output view, generate four candidates in that view by default;
+- with a specified view and quantity, use the requested quantity in that view;
+- if the user edits the plan, use its view entries and candidate IDs as the source of truth.
+
+Use one multi-output invocation per view when supported. Otherwise make the exact number of equivalent
+invocations listed for that view. Keep prompt and input order constant; natural stochastic variation
+supplies candidate diversity. Keep each camera bundle independent and never generate a collage as a
+substitute for separate views.
 
 Save every returned image locally. Pass the returned file paths directly to the `stage` command template in `host_handoff.json`; do not manually copy them into the run first. Do not treat a contact sheet or a four-panel composition as four candidates.
 

@@ -58,6 +58,7 @@ Use commands in this form:
 ```bash
 python scripts/run.py bootstrap
 python scripts/run.py preflight ...
+python scripts/run.py plan ...
 python scripts/run.py prepare ...
 python scripts/run.py stage ...
 python scripts/run.py finalize ...
@@ -92,9 +93,28 @@ python scripts/run.py preflight \
 
 Verify the model path, reference count, output write access, CadQuery/OCP, VTK, Pillow, OpenCV, and trimesh. Treat missing FreeCAD or Blender as warnings when the CadQuery plus VTK path works.
 
-### 3. Generate broad camera coverage first
+### 3. Write and confirm one render plan before generation
 
-Unless the user supplied an exact camera, run the camera-grid stage before final anchors:
+Create the plan before converting the CAD model or rendering any final evidence:
+
+```bash
+python scripts/run.py plan \
+  --input /path/to/model.step \
+  --input /path/to/reference.jpg \
+  --intent "<user request>" \
+  --output /path/to/run-output
+```
+
+This writes the single editable file `planning/render_plan.json`. Read it and show the user its
+`reference_plan` and `generation_plan` before continuing. If the user named a view, map it to a
+named `view_id` and pass `--view-id` when creating the plan; that view must be first in
+`reference_plan.view_ids` and must drive every final reference bundle. If the user named a view and
+quantity, pass the quantity with `--candidates`. Otherwise keep the default final budget at exactly
+four candidates total: front, back, left, and one upper axonometric view.
+
+The user may edit the same file, including reference views, final view entries, candidate IDs,
+resolution, quality, and detail. Do not silently overwrite those edits. The user confirms by setting
+`confirmation.confirmed` to `true`, then resubmit the same file:
 
 ```bash
 python scripts/run.py prepare \
@@ -102,21 +122,27 @@ python scripts/run.py prepare \
   --input /path/to/reference.jpg \
   --intent "<user request>" \
   --output /path/to/run-output \
-  --grid-only
+  --plan /path/to/run-output/planning/render_plan.json
 ```
 
-Inspect these together:
+The prepare command refuses to proceed without a confirmed plan. This is the only confirmation gate;
+the plan is the source of truth for reference coverage and final candidate count.
 
-- `auxiliary/view_grid.png`.
-- Attached camera or composition references.
-- The user's requested viewpoint.
-- `auxiliary/view_grid.json`.
+The default reference plan intentionally contains more views than the final output:
+
+- all fourteen named directional/axonometric CAD views;
+- the user-specified view first when one exists;
+- extra views are deterministic geometry evidence, not final beauty-image requests.
 
 The default named view set contains six principal views—front (+X), back (-X), left (-Y), right (+Y), top (+Z), and bottom (-Z)—plus eight upper/lower axonometric views. These are coordinate-axis conventions, not claims about semantic product front/back unless the user or a reliable reference establishes that mapping.
 
-If the user specifies an exact viewpoint, or a reliable reference fixes one camera, choose one labeled view that exposes defining geometry and avoids accidental occlusion. If no output viewpoint is specified, do not collapse the task to one hero angle: continue without `--view-id` or `--camera-plan` and let the default multi-view bundle render every named direction. Use `view_set: all` and `selected_view_ids` when writing a host camera plan explicitly.
+If the user specifies an exact viewpoint, preserve that view in every reference and final-generation
+plan. If no output viewpoint is specified, use the broad reference set but generate final candidates
+only for the four views recorded in `generation_plan.views`. A host camera analysis may refine labels,
+but it must not override an explicit user view.
 
-Write `planning/camera_plan.host.json` using the schema in `references/PIPELINE.md`. Do not ask the user to author it.
+Use `planning/camera_plan.host.json` only for camera interpretation when needed; do not ask the user
+to author it. The confirmed `render_plan.json` remains the controlling file.
 
 ### 4. Classify every reference automatically
 
@@ -161,7 +187,7 @@ When the model is colorless:
 
 Write `planning/render_brief.host.json` using `references/PROMPTING.md`.
 
-### 6. Render the final auxiliary set
+### 6. Render the confirmed reference and final auxiliary sets
 
 Run preparation again with the host-generated plans:
 
@@ -171,6 +197,7 @@ python scripts/run.py prepare \
   --input /path/to/reference.jpg \
   --intent "<user request>" \
   --output /path/to/run-output \
+  --plan /path/to/run-output/planning/render_plan.json \
   --camera-plan /path/to/run-output/planning/camera_plan.host.json \
   --reference-roles /path/to/run-output/planning/reference_roles.host.json \
   --render-brief /path/to/run-output/planning/render_brief.host.json
@@ -189,7 +216,9 @@ Generate and retain:
 - `camera.json`.
 - `model_manifest.json`.
 
-For the default multi-view path, the same auxiliary set is written under `views/<view-id>/` for every named view, with an independent camera plan and host handoff. Do not reuse one view's auxiliary images as another view's geometry evidence.
+For the default path, `auxiliary/view_grid.png` and its thumbnails cover the broad reference plan,
+while independent auxiliary bundles under `views/<view-id>/` exist only for the final views in the
+confirmed generation plan. Do not reuse one view's auxiliary images as another view's geometry evidence.
 
 Use `color_preview + clay + lineart` as the default balanced image-generation input set. This combination gives natural shaded form, component/color evidence, and crisp topology without overwhelming the image model with technical maps.
 
@@ -211,9 +240,22 @@ Read the per-view files when a multi-view bundle exists; otherwise read the root
 
 Pass the listed input images in exactly that order to the official image-generation capability. Keep each image's role explicit in the prompt.
 
-Use the host's official `$imagegen` Skill by default when it is exposed. Generate four candidates per view by default. Prefer one official multi-output invocation for each view; when the host capability returns one image per call, make four equivalent calls with the same prompt and ordered inputs. For a multi-view run, generate each view independently. Do not create a collage, morph between cameras, or use one view's beauty image as another view's geometry evidence.
+Use the host's official `$imagegen` Skill by default when it is exposed. Follow the confirmed
+`generation_plan.views` exactly:
 
-Save the generated images as local files and assign IDs `C01` through `C04`. Follow `planning/host_handoff.json` and `planning/NEXT_STEPS.md`; these files contain the exact ordered inputs and stage/finalize argument templates.
+- no user-specified view: four candidates total, one each for front, back, left, and upper axonometric;
+- user-specified view: four candidates in that view unless the user specified another quantity;
+- user-specified view plus quantity: use that quantity in that view;
+- if the user edits the plan, the edited view entries and candidate IDs take precedence.
+
+Prefer one official multi-output invocation per view; when the host capability returns one image per
+call, make the exact number of equivalent calls for that view with the same prompt and ordered inputs.
+Generate each final view independently. Do not create a collage, morph between cameras, or use one
+view's beauty image as another view's geometry evidence.
+
+Save the generated images as local files using the candidate IDs in each per-view request. Follow
+`planning/host_handoff.json` and `planning/NEXT_STEPS.md`; these files contain the exact ordered inputs
+and stage/finalize argument templates.
 
 If the official image-generation capability is unavailable, stop after local preparation and return the complete auxiliary bundle plus prompt. Do not fall back to a hidden raw API path.
 
@@ -230,7 +272,10 @@ python scripts/run.py stage \
   --candidate C04=/path/to/generated-4.png
 ```
 
-Run the stage command independently for each view directory in a multi-view run. The stage command must return `awaiting_visual_qa`, create the contact sheet and QA prompt, and leave `final/best.*` and `final/selection.json` absent. Treat local edge and silhouette metrics as weak diagnostics only; never let them create a provisional best image.
+Run the stage command independently for each final view directory in a multi-view run. The stage
+command must return `awaiting_visual_qa`, create the contact sheet and QA prompt, and leave
+`final/best.*` and `final/selection.json` absent. Treat local edge and silhouette metrics as weak
+diagnostics only; never let them create a provisional best image.
 
 ### 9. Perform visual QA with the host model
 
@@ -302,6 +347,7 @@ output/
     camera.json
     aux_manifest.json
   planning/
+    render_plan.json
     reference_role_prompt.txt
     reference_roles.json
     reference_roles.host.json       # when host analysis is used
@@ -320,7 +366,7 @@ output/
     qa_prompt.txt
     visual_qa.json
     visual_qa.host.json             # when host analysis is used
-  views/                            # default when no output viewpoint is specified
+  views/                            # only final-generation views from the confirmed plan
     <view-id>/
       auxiliary/
       planning/

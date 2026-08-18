@@ -7,13 +7,14 @@ Conversation attachments
   -> input discovery
   -> automatic compatible-Python bootstrap
   -> resumable dedicated virtual environment
+  -> one editable reference/generation plan
+  -> user confirmation gate
   -> STEP/mesh to GLB
-  -> deterministic directional view grid
-  -> host camera selection or default all-view expansion
+  -> deterministic broad reference-view grid
   -> per-view auxiliary passes
   -> host reference analysis and render brief
   -> official image-generation skill/tool
-  -> four candidates per view
+  -> exact candidates from generation_plan.views
   -> candidate staging and local diagnostics (no final image)
   -> host visual QA
   -> visual-QA-backed final selection and idempotent report
@@ -58,7 +59,50 @@ The host may explicitly request a subset with `selected_view_ids`. A multi-view 
 }
 ```
 
+Treat this camera plan as camera evidence and reference-view guidance. Do not multiply final image
+generation from it; the confirmed `render_plan.json` and its `generation_plan.views` control final
+candidate count and output views.
+
 The local preparation creates `views/<view-id>/` bundles. Each bundle has its own camera, auxiliary passes, prompt, candidates, visual QA, and final output; never mix cameras between bundles.
+
+## Render plan schema and candidate policy
+
+Run `python scripts/run.py plan ...` before `prepare`. It writes the one user-editable
+`planning/render_plan.json`. Preparation refuses to proceed until the user sets
+`confirmation.confirmed` to `true` and passes the same file with `--plan`.
+
+The plan intentionally separates deterministic CAD reference coverage from final image generation:
+
+```json
+{
+  "schema_version": "1.0",
+  "status": "awaiting_user_confirmation",
+  "confirmation": {"required": true, "confirmed": false},
+  "reference_plan": {
+    "view_set": "all",
+    "view_ids": ["front", "right", "back", "left", "top", "bottom"],
+    "primary_view_ids": ["front"],
+    "generate_extra_views_for_geometry_evidence": true
+  },
+  "generation_plan": {
+    "views": [
+      {"view_id": "front", "candidate_count": 1, "candidate_ids": ["C01"]},
+      {"view_id": "back", "candidate_count": 1, "candidate_ids": ["C02"]},
+      {"view_id": "left", "candidate_count": 1, "candidate_ids": ["C03"]},
+      {"view_id": "front_right_axonometric_upper", "candidate_count": 1, "candidate_ids": ["C04"]}
+    ],
+    "total_candidate_count": 4
+  }
+}
+```
+
+Rules:
+
+- No user-specified view: keep broad reference coverage, but generate exactly four final candidates total—front, back, left, and one upper axonometric.
+- User-specified view: generate four candidates in that view by default.
+- User-specified view plus quantity: generate that quantity in that view.
+- A user-specified view is the first/highest-priority reference view and cannot be silently replaced by a host camera suggestion.
+- User edits to the plan are authoritative. Keep candidate IDs unique across the plan and make `total_candidate_count` equal the listed IDs.
 
 ## Reference roles schema
 

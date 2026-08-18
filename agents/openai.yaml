@@ -1,7 +1,7 @@
 interface:
   display_name: "CAD AI Renderer"
   short_description: "Codex Skill for geometry-anchored CAD renders"
-  default_prompt: "Use $cad-ai-renderer to turn this STEP/STP or mesh model into directional CAD evidence and geometry-anchored 4K, high-detail product-render candidates through the official Codex $imagegen Skill."
+  default_prompt: "Use $cad-ai-renderer to first create a user-confirmed reference/generation plan, then turn this STEP/STP or mesh model into geometry-anchored 4K, high-detail product renders through the official Codex $imagegen Skill while honoring the requested view and candidate count."
 policy:
   products:
   - chatgpt

@@ -15,7 +15,7 @@ The launcher also passed deterministic unit checks for compatible-interpreter di
 
 ## Real STEP self-test
 
-Status: **passed — 18 of 18 checks**.
+Status: **passed — 20 of 20 checks**.
 
 1. `required_dependencies`
 2. `dedicated_environment_contract`
@@ -23,20 +23,22 @@ Status: **passed — 18 of 18 checks**.
 4. `command_specific_help_dispatch`
 5. `generate_real_step_and_reference_fixtures`
 6. `attachment_input_discovery_without_yaml`
-7. `two_stage_camera_grid`
-8. `direct_input_step_to_auxiliary_pipeline`
-9. `windows_safe_portable_output_layout`
-10. `auxiliary_images_nonblank`
-11. `official_image_skill_delegation_contract`
-12. `local_geometry_metric_ranking`
-13. `candidate_staging_does_not_prematurely_select`
-14. `candidate_visual_qa_and_finalization`
-15. `idempotent_structured_final_report`
-16. `colorless_step_detection`
-17. `model_neutral_configuration_validation`
-18. `no_model_lock_or_raw_image_api_client`
+7. `editable_render_plan_confirmation_gate_and_candidate_policy`
+8. `two_stage_camera_grid`
+9. `default_directional_multi_view_bundle`
+10. `direct_input_step_to_auxiliary_pipeline`
+11. `windows_safe_portable_output_layout`
+12. `auxiliary_images_nonblank`
+13. `official_image_skill_delegation_contract`
+14. `local_geometry_metric_ranking`
+15. `candidate_staging_does_not_prematurely_select`
+16. `candidate_visual_qa_and_finalization`
+17. `idempotent_structured_final_report`
+18. `colorless_step_detection`
+19. `model_neutral_configuration_validation`
+20. `no_model_lock_or_raw_image_api_client`
 
-The test generated a colored STEP assembly and a colorless mechanical bracket, discovered a model plus reference image directly from attachment-style paths, converted STEP to GLB, produced a 16-view camera grid, and rendered color preview, clay, lineart, mask, normal, depth, and part-ID passes.
+The test generated a colored STEP assembly and a colorless mechanical bracket, discovered a model plus reference image directly from attachment-style paths, created and gated a user-editable render plan, converted STEP to GLB, produced fourteen named reference views plus four final-generation view bundles, and rendered color preview, clay, lineart, mask, normal, depth, and part-ID passes.
 
 All auxiliary images were nonblank. The colorless STEP was correctly reported with `source_has_useful_colors: false`.
 
@@ -46,10 +48,10 @@ Four deliberately degraded synthetic candidates produced the following local dia
 
 | Candidate | Local geometry score |
 |---|---:|
-| C01 | 80.372 |
-| C02 | 56.653 |
-| C03 | 26.035 |
-| C04 | 14.752 |
+| C01 | 80.070 |
+| C02 | 56.470 |
+| C03 | 24.570 |
+| C04 | 14.820 |
 
 These metrics are intentionally non-authoritative. The staging test verified that local diagnostics create a contact sheet and return `awaiting_visual_qa` without writing `final/best.png` or `final/selection.json`.
 

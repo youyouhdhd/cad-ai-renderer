@@ -38,7 +38,14 @@ from render_aux_vtk import VTKAnchorRenderer
 from runtime_layout import manifest_paths, output_layout
 from step_to_glb import convert_model
 
-PIPELINE_VERSION = "2.1.0"
+PIPELINE_VERSION = "2.2.0"
+RENDER_PLAN_VERSION = "1.0"
+DEFAULT_FINAL_VIEW_IDS = (
+    "front",
+    "back",
+    "left",
+    "front_right_axonometric_upper",
+)
 
 
 def _now() -> str:
@@ -112,11 +119,287 @@ def _camera_from_view(
     return _sanitize_camera_plan(plan, base)
 
 
-def _configured_view_specs(config: Mapping[str, Any]) -> list[dict[str, Any]] | None:
+def _configured_view_specs(
+    config: Mapping[str, Any],
+    view_ids_override: Sequence[str] | None = None,
+) -> list[dict[str, Any]] | None:
     camera = config["camera"]
     if str(camera.get("view_set", "all")) != "all":
-        return None
-    return product_view_specs(camera.get("view_ids"))
+        if view_ids_override is None:
+            return None
+        grid_specs: dict[str, dict[str, Any]] = {}
+        index = 1
+        for elevation in camera.get("view_grid_elevations", []):
+            for azimuth in camera.get("view_grid_azimuths", []):
+                view_id = f"V{index:02d}"
+                grid_specs[view_id] = {
+                    "view_id": view_id,
+                    "label": f"{view_id}  az {float(azimuth):g}  el {float(elevation):g}",
+                    "view_type": "grid",
+                    "axis": None,
+                    "azimuth": float(azimuth),
+                    "elevation": float(elevation),
+                    "projection": str(camera.get("projection", "perspective")),
+                }
+                index += 1
+        unknown = [str(item) for item in view_ids_override if str(item) not in grid_specs]
+        if unknown:
+            raise ConfigError(f"camera plan contains unsupported grid view IDs: {', '.join(unknown)}")
+        return [dict(grid_specs[str(item)]) for item in view_ids_override]
+    return product_view_specs(
+        view_ids_override if view_ids_override is not None else camera.get("view_ids")
+    )
+
+
+def _grid_view_ids(config: Mapping[str, Any]) -> list[str]:
+    camera = config["camera"]
+    count = len(camera.get("view_grid_azimuths", [])) * len(camera.get("view_grid_elevations", []))
+    return [f"V{index:02d}" for index in range(1, count + 1)]
+
+
+def _available_view_ids(config: Mapping[str, Any]) -> list[str]:
+    if str(config["camera"].get("view_set", "all")) == "all":
+        return [str(item["view_id"]) for item in product_view_specs(config["camera"].get("view_ids"))]
+    return _grid_view_ids(config)
+
+
+def _camera_plan_view_ids(camera_plan_path: str | Path | None) -> list[str]:
+    if not camera_plan_path:
+        return []
+    raw_plan = _read_json(camera_plan_path)
+    if not isinstance(raw_plan, Mapping):
+        raise ConfigError("Camera-plan JSON must be an object")
+    requested_ids = raw_plan.get("selected_view_ids") or raw_plan.get("view_ids")
+    if requested_ids is not None:
+        if not isinstance(requested_ids, list):
+            raise ConfigError("Camera-plan selected_view_ids/view_ids must be a list")
+        return [str(item) for item in requested_ids]
+    selected_id = raw_plan.get("selected_view_id")
+    return [str(selected_id)] if selected_id else []
+
+
+def _candidate_ids_for_views(view_ids: Sequence[str], counts: Sequence[int]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    next_index = 1
+    for view_id, count in zip(view_ids, counts):
+        candidate_ids = [f"C{index:02d}" for index in range(next_index, next_index + int(count))]
+        next_index += int(count)
+        entries.append(
+            {
+                "view_id": str(view_id),
+                "candidate_count": int(count),
+                "candidate_ids": candidate_ids,
+            }
+        )
+    return entries
+
+
+def _build_render_plan(
+    config: Mapping[str, Any],
+    discovery: Mapping[str, Any],
+    *,
+    requested_view_id: str | None = None,
+    camera_plan_path: str | Path | None = None,
+    requested_candidate_count: int | None = None,
+) -> dict[str, Any]:
+    """Build the single user-editable plan before any CAD rendering occurs."""
+    available_ids = _available_view_ids(config)
+    camera_ids = _camera_plan_view_ids(camera_plan_path)
+    explicit_ids = [str(requested_view_id)] if requested_view_id else camera_ids
+    unknown = [item for item in explicit_ids if item not in available_ids]
+    if unknown:
+        raise ConfigError(
+            f"The requested plan view ID(s) are not available: {', '.join(unknown)}. "
+            f"Available: {', '.join(available_ids)}"
+        )
+
+    if explicit_ids:
+        reference_ids = [*dict.fromkeys([*explicit_ids, *available_ids])]
+        generation_view_ids = list(dict.fromkeys(explicit_ids))
+        candidate_count = int(
+            requested_candidate_count
+            if requested_candidate_count is not None
+            else config["generation"].get("candidates", 4)
+        )
+        if not 1 <= candidate_count <= 10:
+            raise ConfigError("The confirmed render plan candidate count must be between 1 and 10")
+        generation_views = _candidate_ids_for_views(
+            generation_view_ids,
+            [candidate_count] * len(generation_view_ids),
+        )
+        view_source = "user_view" if requested_view_id else "camera_plan"
+        final_policy = (
+            "The user supplied a view; generate the requested number of candidates in that view only."
+        )
+    else:
+        reference_ids = list(available_ids)
+        generation_view_ids = [item for item in DEFAULT_FINAL_VIEW_IDS if item in available_ids]
+        if not generation_view_ids:
+            generation_view_ids = available_ids[:4]
+        # The default final budget is four images total: one per requested default view.
+        generation_views = _candidate_ids_for_views(
+            generation_view_ids,
+            [1] * len(generation_view_ids),
+        )
+        view_source = "inferred_default"
+        final_policy = (
+            "No output view was specified; generate exactly four final candidates total: "
+            "front, back, left, and one upper axonometric view."
+        )
+
+    total_candidates = sum(int(item["candidate_count"]) for item in generation_views)
+    return {
+        "schema_version": RENDER_PLAN_VERSION,
+        "status": "awaiting_user_confirmation",
+        "confirmation": {
+            "required": True,
+            "confirmed": False,
+            "confirmed_by_user": False,
+            "confirmed_at": None,
+            "instruction": (
+                "Review or edit this file, then set confirmation.confirmed to true and resubmit it "
+                "with the prepare command."
+            ),
+        },
+        "model": {
+            "path": str(Path(str(discovery["model"])).expanduser().resolve()),
+            "format": Path(str(discovery["model"])).suffix.lower().lstrip("."),
+        },
+        "references": [dict(item) for item in discovery.get("references", [])],
+        "intent": str(config["project"].get("description", "")),
+        "view_intent": {
+            "source": view_source,
+            "requested_view_ids": explicit_ids,
+            "priority_rule": "User-specified view IDs take priority for reference and final generation plans.",
+        },
+        "reference_plan": {
+            "purpose": "Deterministic CAD model reference images and auxiliary evidence.",
+            "view_set": "all" if str(config["camera"].get("view_set", "all")) == "all" else "grid",
+            "view_ids": reference_ids,
+            "primary_view_ids": explicit_ids,
+            "generate_extra_views_for_geometry_evidence": True,
+        },
+        "generation_plan": {
+            "purpose": "Final AI product-render candidates only; do not multiply this budget by reference views.",
+            "policy": final_policy,
+            "views": generation_views,
+            "view_ids": [str(item["view_id"]) for item in generation_views],
+            "total_candidate_count": total_candidates,
+            "host_skill": str(config["generation"].get("host_skill", "imagegen")),
+            "target_resolution": str(config["generation"].get("target_resolution", "4k")),
+            "quality": str(config["generation"].get("quality", "high")),
+            "detail_level": str(config["generation"].get("detail_level", "high")),
+        },
+        "editable_fields": [
+            "reference_plan.view_ids",
+            "generation_plan.views",
+            "generation_plan.total_candidate_count",
+            "generation_plan.host_skill",
+            "generation_plan.target_resolution",
+            "generation_plan.quality",
+            "generation_plan.detail_level",
+            "confirmation.confirmed",
+        ],
+        "notes": [
+            "Reference coverage may contain many deterministic CAD views; final generation follows generation_plan.views only.",
+            "Do not place personal information in this plan or commit a runtime plan containing local paths.",
+        ],
+    }
+
+
+def _plan_confirmed(plan: Mapping[str, Any]) -> bool:
+    confirmation = plan.get("confirmation")
+    if isinstance(confirmation, Mapping) and confirmation.get("confirmed") is True:
+        return True
+    return plan.get("confirmed") is True
+
+
+def _validate_render_plan(
+    plan: Mapping[str, Any],
+    config: Mapping[str, Any],
+    discovery: Mapping[str, Any],
+) -> dict[str, Any]:
+    if str(plan.get("schema_version", "")) != RENDER_PLAN_VERSION:
+        raise ConfigError(f"Unsupported render plan schema: {plan.get('schema_version')!r}")
+    if not _plan_confirmed(plan):
+        raise ConfigError(
+            "The render plan is not confirmed. Review planning/render_plan.json, set "
+            "confirmation.confirmed to true, and resubmit it."
+        )
+    model = plan.get("model")
+    model_path = model.get("path") if isinstance(model, Mapping) else None
+    if model_path and Path(str(model_path)).expanduser().resolve() != Path(str(discovery["model"])).expanduser().resolve():
+        raise ConfigError("The confirmed render plan belongs to a different model input")
+    available_ids = _available_view_ids(config)
+    reference_plan = plan.get("reference_plan")
+    generation_plan = plan.get("generation_plan")
+    if not isinstance(reference_plan, Mapping) or not isinstance(generation_plan, Mapping):
+        raise ConfigError("The render plan must contain reference_plan and generation_plan objects")
+    reference_ids = reference_plan.get("view_ids")
+    if not isinstance(reference_ids, list) or not reference_ids:
+        raise ConfigError("reference_plan.view_ids must be a non-empty list")
+    reference_ids = [str(item) for item in reference_ids]
+    if len(set(reference_ids)) != len(reference_ids):
+        raise ConfigError("reference_plan.view_ids must not contain duplicates")
+    unknown_reference = [item for item in reference_ids if item not in available_ids]
+    if unknown_reference:
+        raise ConfigError(f"Unknown reference-plan view ID(s): {', '.join(unknown_reference)}")
+    generation_views = generation_plan.get("views")
+    if not isinstance(generation_views, list) or not generation_views:
+        raise ConfigError("generation_plan.views must be a non-empty list")
+    normalized_views: list[dict[str, Any]] = []
+    generation_view_ids_seen: set[str] = set()
+    all_candidate_ids: list[str] = []
+    for entry in generation_views:
+        if not isinstance(entry, Mapping):
+            raise ConfigError("Each generation_plan.views entry must be an object")
+        selected_id = str(entry.get("view_id", ""))
+        if selected_id not in available_ids:
+            raise ConfigError(f"Unknown generation-plan view ID: {selected_id!r}")
+        if selected_id in generation_view_ids_seen:
+            raise ConfigError(f"generation_plan.views must not repeat view ID {selected_id!r}")
+        generation_view_ids_seen.add(selected_id)
+        candidate_ids = entry.get("candidate_ids")
+        count = int(entry.get("candidate_count", len(candidate_ids) if isinstance(candidate_ids, list) else 0))
+        if not 1 <= count <= 10:
+            raise ConfigError(f"Candidate count for {selected_id!r} must be between 1 and 10")
+        if candidate_ids is None:
+            candidate_ids = []
+        if not isinstance(candidate_ids, list) or len(candidate_ids) != count:
+            raise ConfigError(
+                f"generation_plan.views[{selected_id!r}].candidate_ids must contain exactly {count} IDs"
+            )
+        candidate_ids = [str(item) for item in candidate_ids]
+        if len(set(candidate_ids)) != len(candidate_ids):
+            raise ConfigError(f"Candidate IDs must be unique within view {selected_id!r}")
+        all_candidate_ids.extend(candidate_ids)
+        normalized_views.append(
+            {
+                "view_id": selected_id,
+                "candidate_count": count,
+                "candidate_ids": candidate_ids,
+            }
+        )
+    if len(set(all_candidate_ids)) != len(all_candidate_ids):
+        raise ConfigError("Candidate IDs must be unique across the confirmed generation plan")
+    total = int(generation_plan.get("total_candidate_count", len(all_candidate_ids)))
+    if total != len(all_candidate_ids):
+        raise ConfigError("generation_plan.total_candidate_count must equal the sum of candidate IDs")
+    primary_ids = reference_plan.get("primary_view_ids", [])
+    if primary_ids:
+        if not isinstance(primary_ids, list):
+            raise ConfigError("reference_plan.primary_view_ids must be a list")
+        missing = [str(item) for item in primary_ids if str(item) not in [str(item) for item in reference_ids]]
+        if missing:
+            raise ConfigError("Every primary view must also appear in reference_plan.view_ids")
+    normalized = dict(plan)
+    normalized["reference_plan"] = dict(reference_plan)
+    normalized["reference_plan"]["view_ids"] = reference_ids
+    normalized["generation_plan"] = dict(generation_plan)
+    normalized["generation_plan"]["views"] = normalized_views
+    normalized["generation_plan"]["view_ids"] = [item["view_id"] for item in normalized_views]
+    normalized["generation_plan"]["total_candidate_count"] = total
+    return normalized
 
 
 def _resolve_camera_plans(
@@ -126,8 +409,19 @@ def _resolve_camera_plans(
     *,
     view_id: str | None,
     camera_plan_path: str | Path | None,
+    selected_view_ids: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Resolve one or many camera plans without making up a semantic front view."""
+    if selected_view_ids is not None:
+        if not selected_view_ids:
+            raise ConfigError("The confirmed generation plan must contain at least one view ID")
+        plans = []
+        for selected_id in selected_view_ids:
+            plan = _camera_from_view(view_records, str(selected_id), base_camera)
+            plan["source"] = "confirmed_render_plan"
+            plan["rationale"] = "Selected by the confirmed user-editable render plan."
+            plans.append(plan)
+        return plans
     if camera_plan_path:
         raw_plan = _read_json(camera_plan_path)
         if not isinstance(raw_plan, Mapping):
@@ -461,6 +755,7 @@ def _prepare_view_bundle(
     render_brief_path: str | Path | None,
     strict_geometry: bool,
     shared_glb: str | Path,
+    candidate_ids: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Render one camera bundle and write its independent host handoff."""
     root = Path(view_root).expanduser().resolve()
@@ -522,8 +817,11 @@ def _prepare_view_bundle(
         detail_level=str(config["generation"].get("detail_level", "high")),
     )
     (planning_dir / "final_prompt.txt").write_text(generation_prompt, encoding="utf-8")
-    candidate_count = int(config["generation"]["candidates"])
-    candidate_ids = [f"C{index:02d}" for index in range(1, candidate_count + 1)]
+    resolved_candidate_ids = [str(item) for item in (candidate_ids or [])]
+    if not resolved_candidate_ids:
+        candidate_count = int(config["generation"]["candidates"])
+        resolved_candidate_ids = [f"C{index:02d}" for index in range(1, candidate_count + 1)]
+    candidate_count = len(resolved_candidate_ids)
     imagegen_request = {
         "backend": "official_host_image_generation_skill_or_tool",
         "raw_api_required": False,
@@ -534,7 +832,7 @@ def _prepare_view_bundle(
         "view_label": camera_plan.get("view_label"),
         "view_type": camera_plan.get("view_type"),
         "candidate_count": candidate_count,
-        "candidate_ids": candidate_ids,
+        "candidate_ids": resolved_candidate_ids,
         "aspect_ratio": config["generation"]["aspect_ratio"],
         "quality": config["generation"]["quality"],
         "output_format": config["generation"]["output_format"],
@@ -580,7 +878,7 @@ def _prepare_view_bundle(
         "camera_plan": dict(camera_plan),
         "imagegen_request": str(planning_dir / "imagegen_request.json"),
         "host_handoff": str(planning_dir / "host_handoff.json"),
-        "candidate_ids": candidate_ids,
+        "candidate_ids": resolved_candidate_ids,
     }
 
 
@@ -643,6 +941,29 @@ def _load_or_build_config(args: argparse.Namespace) -> tuple[dict[str, Any], dic
     return cfg, discovery
 
 
+def create_render_plan(
+    config: Mapping[str, Any],
+    discovery: Mapping[str, Any],
+    *,
+    requested_view_id: str | None = None,
+    camera_plan_path: str | Path | None = None,
+    requested_candidate_count: int | None = None,
+    plan_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Write the one user-editable plan without converting or rendering the CAD model."""
+    output_dir = Path(str(config["project"]["output_dir"])).expanduser().resolve()
+    target = Path(plan_path).expanduser().resolve() if plan_path else output_dir / "planning" / "render_plan.json"
+    plan = _build_render_plan(
+        config,
+        discovery,
+        requested_view_id=requested_view_id,
+        camera_plan_path=camera_plan_path,
+        requested_candidate_count=requested_candidate_count,
+    )
+    _write_json(target, plan)
+    return {"plan_path": str(target), "plan": plan}
+
+
 def prepare_run(
     config: Mapping[str, Any],
     discovery: Mapping[str, Any],
@@ -653,12 +974,24 @@ def prepare_run(
     reference_roles_path: str | Path | None = None,
     render_brief_path: str | Path | None = None,
     strict_geometry: bool = False,
+    render_plan_path: str | Path | None = None,
 ) -> dict[str, Any]:
     output_dir = Path(str(config["project"]["output_dir"])).expanduser().resolve()
     layout = output_layout(output_dir, create=True)
     aux_dir = layout["auxiliary"]
     planning_dir = layout["planning"]
     final_dir = layout["final"]
+    render_plan: dict[str, Any] | None = None
+    if render_plan_path:
+        source_plan_path = Path(render_plan_path).expanduser().resolve()
+        render_plan = _validate_render_plan(_read_json(source_plan_path), config, discovery)
+        # Keep the confirmed plan beside the generated evidence as the canonical run record.
+        _write_json(planning_dir / "render_plan.json", render_plan)
+    elif not grid_only:
+        raise ConfigError(
+            "prepare requires a confirmed render plan. Run the plan command first, review "
+            "planning/render_plan.json, set confirmation.confirmed to true, then pass --plan."
+        )
     dump_resolved_config(config, output_dir / "resolved_project.yaml")
     _write_json(output_dir / "input_discovery.json", discovery)
 
@@ -677,6 +1010,7 @@ def prepare_run(
         "paths": manifest_paths(layout),
         "steps": [],
         "warnings": [],
+        "render_plan": str(planning_dir / "render_plan.json") if render_plan else None,
     }
     _write_json(output_dir / "run_manifest.json", run_manifest)
 
@@ -713,7 +1047,10 @@ def prepare_run(
             base_camera,
             azimuths=config["camera"]["view_grid_azimuths"],
             elevations=config["camera"]["view_grid_elevations"],
-            view_specs=_configured_view_specs(config),
+            view_specs=_configured_view_specs(
+                config,
+                render_plan.get("reference_plan", {}).get("view_ids") if render_plan else None,
+            ),
         )
         view_records = view_result["views"]
         references = _merge_reference_roles(config["project"]["references"], reference_roles_path)
@@ -754,13 +1091,24 @@ def prepare_run(
             _log(f"View-grid stage complete: {view_result['view_grid']}")
             return run_manifest
 
+        generation_views = (
+            render_plan.get("generation_plan", {}).get("views", []) if render_plan else []
+        )
+        planned_view_ids = [str(item["view_id"]) for item in generation_views]
         camera_plans = _resolve_camera_plans(
             view_records,
             base_camera,
             config,
             view_id=view_id,
             camera_plan_path=camera_plan_path,
+            selected_view_ids=planned_view_ids or None,
         )
+        if generation_views and len(generation_views) != len(camera_plans):
+            raise ConfigError("The confirmed generation plan and resolved camera plan contain different view counts")
+        candidate_ids_by_view = {
+            str(item["view_id"]): [str(candidate_id) for candidate_id in item["candidate_ids"]]
+            for item in generation_views
+        }
         view_bundles: list[dict[str, Any]] = []
         if len(camera_plans) == 1:
             _log("Rendering lineart, mask, normal, depth, part ID, clay, and color preview")
@@ -776,10 +1124,14 @@ def prepare_run(
                     render_brief_path,
                     strict_geometry,
                     aux_dir / "model.glb",
+                    candidate_ids=candidate_ids_by_view.get(
+                        str(camera_plans[0].get("selected_view_id")),
+                        None,
+                    ),
                 )
             )
         else:
-            _log(f"Rendering {len(camera_plans)} default directional view bundles")
+            _log(f"Rendering {len(camera_plans)} final directional view bundles")
             view_root = output_dir / "views"
             for camera_plan in camera_plans:
                 selected_id = str(camera_plan.get("selected_view_id") or "view")
@@ -796,18 +1148,30 @@ def prepare_run(
                         render_brief_path,
                         strict_geometry,
                         aux_dir / "model.glb",
+                        candidate_ids=candidate_ids_by_view.get(selected_id),
                     )
                 )
+            candidate_counts = {
+                str(bundle.get("view_id")): len(bundle.get("candidate_ids", []))
+                for bundle in view_bundles
+            }
+            total_candidate_count = sum(candidate_counts.values())
+            uniform_count = next(iter(candidate_counts.values()), 0)
+            if any(count != uniform_count for count in candidate_counts.values()):
+                uniform_count_value: int | None = None
+            else:
+                uniform_count_value = uniform_count
             aggregate_request = {
                 "backend": "official_host_image_generation_skill_or_tool",
                 "raw_api_required": False,
                 "host_skill": str(config["generation"].get("host_skill", "imagegen")),
                 "target_resolution": str(config["generation"].get("target_resolution", "4k")),
                 "detail_level": str(config["generation"].get("detail_level", "high")),
-                "view_set": "all",
+                "view_set": render_plan.get("reference_plan", {}).get("view_set", "all") if render_plan else "all",
                 "view_count": len(view_bundles),
-                "candidate_count_per_view": int(config["generation"]["candidates"]),
-                "total_candidate_count": len(view_bundles) * int(config["generation"]["candidates"]),
+                "candidate_count_per_view": uniform_count_value,
+                "candidate_counts": candidate_counts,
+                "total_candidate_count": total_candidate_count,
                 "aspect_ratio": config["generation"]["aspect_ratio"],
                 "quality": config["generation"]["quality"],
                 "output_format": config["generation"]["output_format"],
@@ -815,13 +1179,22 @@ def prepare_run(
                 "instruction": "Run the official image-generation handoff independently for every view bundle; preserve each view's CAD camera and never merge view directions into one candidate.",
                 "resolution_policy": "Request the target resolution for every view; record actual dimensions if the host cannot expose exact 4K control.",
             }
-            _write_json(planning_dir / "view_set.json", {"view_set": "all", "views": view_bundles})
+            _write_json(
+                planning_dir / "view_set.json",
+                {
+                    "view_set": aggregate_request["view_set"],
+                    "reference_view_ids": render_plan.get("reference_plan", {}).get("view_ids", []) if render_plan else [],
+                    "views": view_bundles,
+                    "candidate_counts": candidate_counts,
+                    "total_candidate_count": total_candidate_count,
+                },
+            )
             _write_json(planning_dir / "imagegen_request.json", aggregate_request)
             write_multi_generation_handoff(
                 output_dir,
                 launcher=Path(__file__).resolve().parent / "run.py",
                 view_bundles=view_bundles,
-                candidate_count=int(config["generation"]["candidates"]),
+                candidate_count=uniform_count_value or max(candidate_counts.values(), default=1),
                 host_skill=str(config["generation"].get("host_skill", "imagegen")),
                 target_resolution=str(config["generation"].get("target_resolution", "4k")),
                 quality=str(config["generation"].get("quality", "high")),
@@ -829,6 +1202,7 @@ def prepare_run(
             )
         run_manifest["view_count"] = len(view_bundles)
         run_manifest["view_bundles"] = view_bundles
+        run_manifest["final_candidate_count"] = sum(len(item.get("candidate_ids", [])) for item in view_bundles)
         run_manifest["status"] = "prepared_for_image_generation"
         run_manifest["finished_at"] = _now()
         run_manifest["steps"].append({"name": "view_bundles", "status": "ok", "at": _now()})
@@ -864,6 +1238,11 @@ def prepare_run(
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--plan-only",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     source = parser.add_argument_group("input source")
     source.add_argument("--project", help="Optional advanced project YAML; not required for attachment use")
     source.add_argument("--input", action="append", default=[], help="Attached file or directory; repeat as needed")
@@ -884,6 +1263,14 @@ def _build_parser() -> argparse.ArgumentParser:
     camera.add_argument("--framing", type=float)
 
     planning = parser.add_argument_group("host planning artifacts")
+    planning.add_argument(
+        "--plan",
+        help="Confirmed user-editable render_plan.json required before final preparation",
+    )
+    planning.add_argument(
+        "--plan-output",
+        help="Where the plan command writes render_plan.json; defaults inside --output/planning",
+    )
     planning.add_argument("--reference-roles", help="Host-generated reference-role JSON")
     planning.add_argument("--render-brief", help="Host-generated rendering brief JSON")
     planning.add_argument("--strict-geometry", action="store_true", help="Build a one-time geometry recovery prompt")
@@ -905,16 +1292,28 @@ def main() -> int:
     args = _build_parser().parse_args()
     try:
         config, discovery = _load_or_build_config(args)
-        prepare_run(
-            config,
-            discovery,
-            grid_only=args.grid_only,
-            view_id=args.view_id,
-            camera_plan_path=args.camera_plan,
-            reference_roles_path=args.reference_roles,
-            render_brief_path=args.render_brief,
-            strict_geometry=args.strict_geometry,
-        )
+        if args.plan_only:
+            result = create_render_plan(
+                config,
+                discovery,
+                requested_view_id=args.view_id,
+                camera_plan_path=args.camera_plan,
+                requested_candidate_count=args.candidates,
+                plan_path=args.plan_output,
+            )
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        else:
+            prepare_run(
+                config,
+                discovery,
+                grid_only=args.grid_only,
+                view_id=args.view_id,
+                camera_plan_path=args.camera_plan,
+                reference_roles_path=args.reference_roles,
+                render_brief_path=args.render_brief,
+                strict_geometry=args.strict_geometry,
+                render_plan_path=args.plan,
+            )
     except (ConfigError, InputDiscoveryError, FileNotFoundError, RuntimeError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2

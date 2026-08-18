@@ -76,9 +76,9 @@ def camera_selection_prompt(
         for index, ref in enumerate(references)
     ]
     multi_view_policy = (
-        "If the user did not specify an output viewpoint and no reliable reference fixes one, preserve the full default view set. Return `view_set: all` and a `selected_view_ids` list containing every required principal and axonometric view; do not collapse the job to one hero angle."
+        "If the user did not specify an output viewpoint and no reliable reference fixes one, preserve the full default view set for deterministic CAD reference evidence. The final generation plan is separate: it should normally contain exactly four final candidates total (front, back, left, and one axonometric view)."
         if default_multi_view
-        else "If one camera is required, select the clearest available view and do not invent a semantic front/back label that the CAD coordinate system cannot support."
+        else "If the user specified a viewpoint, put that view first in both the reference plan and final generation plan. Do not replace it with a more convenient camera or invent a semantic front/back label that the CAD coordinate system cannot support."
     )
     return f"""Act as the camera director for a CAD-to-image rendering workflow.
 
@@ -111,6 +111,10 @@ Return JSON:
   "rationale": "one concise paragraph",
   "reference_camera_detected": false
 }}
+
+The host writes a single editable render plan before preparation. Keep broad deterministic views in
+`reference_plan.view_ids`, keep final output views and candidate counts in `generation_plan.views`,
+and preserve a user-specified view as the highest-priority entry in both sections.
 
 Prefer available views. For a single view, allow at most a small correction of 12 degrees. Keep fov_deg
 from 24 to 75 and framing from 0.65 to 0.90. Use coordinate-axis labels as orientation evidence when

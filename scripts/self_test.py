@@ -17,7 +17,7 @@ from typing import Any
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
-from cad_render import prepare_run
+from cad_render import create_render_plan, prepare_run
 from config import ConfigError, build_direct_config, product_view_specs, validate_config
 from finalize_candidates import finalize
 from geometry_metrics import score_candidate
@@ -26,6 +26,28 @@ from preflight import run_preflight
 from run import BOOTSTRAP_MARKER, _lock_is_stale, _managed_environment_action, _select_best_interpreter
 from runtime_layout import AUXILIARY_DIRNAME, resolve_auxiliary_dir
 from step_to_glb import convert_model
+
+
+def _confirmed_render_plan(
+    config: dict[str, Any],
+    discovery: dict[str, Any],
+    path: Path,
+    *,
+    view_id: str | None = None,
+    candidates: int | None = None,
+) -> Path:
+    result = create_render_plan(
+        config,
+        discovery,
+        requested_view_id=view_id,
+        requested_candidate_count=candidates,
+        plan_path=path,
+    )
+    plan = result["plan"]
+    plan["confirmation"]["confirmed"] = True
+    plan["confirmation"]["confirmed_by_user"] = True
+    path.write_text(json.dumps(plan, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
 
 
 def _create_step_fixtures(root: Path) -> tuple[Path, Path]:
@@ -297,6 +319,52 @@ def run_self_test(output_dir: str | Path) -> dict[str, Any]:
         if not discovery_ok:
             raise RuntimeError("Attachment discovery did not identify model and reference")
 
+        plan_probe_output = root / "plan_probe_output"
+        plan_probe_config = build_direct_config(
+            assembly_step,
+            plan_probe_output,
+            description="Plan confirmation contract.",
+            references=discovery["references"],
+            overrides={"render": {"width": 256, "height": 256}},
+        )
+        plan_probe_path = plan_probe_output / "planning" / "render_plan.json"
+        plan_probe = create_render_plan(plan_probe_config, discovery, plan_path=plan_probe_path)
+        plan_payload = plan_probe["plan"]
+        priority_plan = create_render_plan(
+            plan_probe_config,
+            discovery,
+            requested_view_id="back",
+            requested_candidate_count=4,
+            plan_path=plan_probe_output / "planning" / "priority_render_plan.json",
+        )["plan"]
+        blocked_without_confirmation = False
+        try:
+            prepare_run(plan_probe_config, discovery)
+        except ConfigError:
+            blocked_without_confirmation = True
+        plan_ok = (
+            plan_payload["confirmation"]["confirmed"] is False
+            and len(plan_payload["reference_plan"]["view_ids"]) == 14
+            and plan_payload["generation_plan"]["view_ids"]
+            == ["front", "back", "left", "front_right_axonometric_upper"]
+            and plan_payload["generation_plan"]["total_candidate_count"] == 4
+            and priority_plan["reference_plan"]["view_ids"][0] == "back"
+            and priority_plan["generation_plan"]["view_ids"] == ["back"]
+            and priority_plan["generation_plan"]["total_candidate_count"] == 4
+            and blocked_without_confirmation
+        )
+        report["checks"].append(
+            {
+                "name": "editable_render_plan_confirmation_gate_and_candidate_policy",
+                "ok": plan_ok,
+                "reference_view_count": len(plan_payload["reference_plan"]["view_ids"]),
+                "final_view_ids": plan_payload["generation_plan"]["view_ids"],
+                "final_candidate_count": plan_payload["generation_plan"]["total_candidate_count"],
+            }
+        )
+        if not plan_ok:
+            raise RuntimeError("Render-plan confirmation gate or candidate policy failed")
+
         grid_output = root / "grid_only_output"
         grid_config = build_direct_config(
             assembly_step,
@@ -332,19 +400,29 @@ def run_self_test(output_dir: str | Path) -> dict[str, Any]:
                 "render": {"width": 256, "height": 256},
                 "camera": {
                     "view_set": "all",
-                    "view_ids": ["front", "top", "front_right_axonometric_upper"],
                 },
-                "generation": {"candidates": 1},
+                "generation": {"candidates": 4},
             },
         )
-        multi_manifest = prepare_run(multi_config, discovery)
+        multi_plan_path = _confirmed_render_plan(
+            multi_config,
+            discovery,
+            multi_output / "planning" / "render_plan.json",
+        )
+        multi_manifest = prepare_run(multi_config, discovery, render_plan_path=multi_plan_path)
         default_view_ids = [item["view_id"] for item in product_view_specs()]
         multi_view_ids = [item.get("view_id") for item in multi_manifest.get("view_bundles", [])]
+        multi_candidate_ids = [
+            candidate_id
+            for bundle in multi_manifest.get("view_bundles", [])
+            for candidate_id in bundle.get("candidate_ids", [])
+        ]
         multi_ok = (
             multi_manifest["status"] == "prepared_for_image_generation"
-            and multi_manifest.get("view_count") == 3
+            and multi_manifest.get("view_count") == 4
             and len(default_view_ids) == 14
-            and multi_view_ids == ["front", "top", "front_right_axonometric_upper"]
+            and multi_view_ids == ["front", "back", "left", "front_right_axonometric_upper"]
+            and multi_candidate_ids == ["C01", "C02", "C03", "C04"]
             and (multi_output / AUXILIARY_DIRNAME / "view_grid.json").exists()
             and (multi_output / "planning" / "imagegen_request.json").exists()
             and (multi_output / "planning" / "host_handoff.json").exists()
@@ -362,6 +440,7 @@ def run_self_test(output_dir: str | Path) -> dict[str, Any]:
                 "ok": multi_ok,
                 "default_view_count": len(default_view_ids),
                 "prepared_view_ids": multi_view_ids,
+                "final_candidate_ids": multi_candidate_ids,
             }
         )
         if not multi_ok:
@@ -384,7 +463,14 @@ def run_self_test(output_dir: str | Path) -> dict[str, Any]:
                 "generation": {"candidates": 4, "aspect_ratio": "1:1", "quality": "high"},
             },
         )
-        manifest = prepare_run(config, discovery, view_id="V02")
+        plan_path = _confirmed_render_plan(
+            config,
+            discovery,
+            pipeline_output / "planning" / "render_plan.json",
+            view_id="V02",
+            candidates=4,
+        )
+        manifest = prepare_run(config, discovery, render_plan_path=plan_path)
         required_files = [
             pipeline_output / AUXILIARY_DIRNAME / "view_grid.png",
             pipeline_output / AUXILIARY_DIRNAME / "color_preview.png",
@@ -401,7 +487,14 @@ def run_self_test(output_dir: str | Path) -> dict[str, Any]:
             pipeline_output / "planning" / "NEXT_STEPS.md",
             pipeline_output / "planning" / "visual_qa.template.json",
         ]
-        prepare_ok = manifest["status"] == "prepared_for_image_generation" and all(path.exists() for path in required_files)
+        pipeline_view_grid = json.loads(
+            (pipeline_output / AUXILIARY_DIRNAME / "view_grid.json").read_text(encoding="utf-8")
+        )
+        prepare_ok = (
+            manifest["status"] == "prepared_for_image_generation"
+            and all(path.exists() for path in required_files)
+            and pipeline_view_grid[0]["view_id"] == "V02"
+        )
         report["checks"].append(
             {"name": "direct_input_step_to_auxiliary_pipeline", "ok": prepare_ok, "files": [str(path) for path in required_files]}
         )

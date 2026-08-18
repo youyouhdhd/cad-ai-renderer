@@ -31,6 +31,7 @@ COMMANDS: dict[str, tuple[str, list[str]] | None] = {
     "bootstrap": None,
     "discover": ("input_discovery.py", []),
     "preflight": ("preflight.py", []),
+    "plan": ("cad_render.py", ["--plan-only"]),
     "prepare": ("cad_render.py", []),
     "stage": ("finalize_candidates.py", ["--stage-only"]),
     "finalize": ("finalize_candidates.py", []),

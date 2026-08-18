@@ -112,7 +112,21 @@ python scripts/run.py preflight \
   --output-dir ./output
 ```
 
-先生成相机网格：
+先生成可编辑渲染计划（这一步不会转换或渲染 CAD）：
+
+```bash
+python scripts/run.py plan \
+  --input ./model.step \
+  --input ./reference.jpg \
+  --intent "高端工业产品棚拍，拉丝金属与深色聚合物" \
+  --output ./output
+```
+
+审查 `./output/planning/render_plan.json`，如有需要修改参考视角或最终候选数量，然后设置
+`confirmation.confirmed` 为 `true`。未指定视角时，参考图可以覆盖十四个方向，但最终只生成
+四张（前、后、左、一个上方轴测）；指定视角时，候选都使用该视角。
+
+提交已确认计划并生成辅助图：
 
 ```bash
 python scripts/run.py prepare \
@@ -120,21 +134,10 @@ python scripts/run.py prepare \
   --input ./reference.jpg \
   --intent "高端工业产品棚拍，拉丝金属与深色聚合物" \
   --output ./output \
-  --grid-only
+  --plan ./output/planning/render_plan.json
 ```
 
-选定视角并生成完整辅助图：
-
-```bash
-python scripts/run.py prepare \
-  --input ./model.step \
-  --input ./reference.jpg \
-  --intent "高端工业产品棚拍，拉丝金属与深色聚合物" \
-  --output ./output \
-  --view-id V06
-```
-
-正式 Skill 流程会由宿主模型自动分析视角和参考图，并传入 `--camera-plan`、`--reference-roles`、`--render-brief`，用户无须手写这些文件。
+正式 Skill 流程会由宿主模型自动分析视角和参考图，并传入 `--camera-plan`、`--reference-roles`、`--render-brief`，用户无须手写这些文件；但确认后的 `render_plan.json` 始终是视角和候选预算的控制面。
 
 ## 4. STEP 支持
 

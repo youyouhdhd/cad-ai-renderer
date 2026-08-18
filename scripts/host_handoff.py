@@ -251,13 +251,20 @@ def write_multi_generation_handoff(
                 },
             }
         )
+    candidate_counts = {
+        str(view.get("view_id")): len(view.get("candidate_ids", []))
+        for view in views
+    }
+    unique_counts = set(candidate_counts.values())
     payload = {
         "contract_version": "2.2",
         "stage": "host_image_generation_multi_view",
         "status": "prepared_for_image_generation",
         "run_dir": str(root),
         "view_count": len(views),
-        "candidate_count_per_view": int(candidate_count),
+        "candidate_count_per_view": next(iter(unique_counts)) if len(unique_counts) == 1 else None,
+        "candidate_counts": candidate_counts,
+        "total_candidate_count": sum(candidate_counts.values()),
         "host_skill": host_skill,
         "target_resolution": target_resolution,
         "quality": quality,
@@ -268,6 +275,7 @@ def write_multi_generation_handoff(
             "Use the official Codex imagegen Skill by default; do not call a raw image API.",
             "Request 4K at high quality and high detail for every view when supported.",
             "Generate each view independently; never average, collage, or morph different camera directions into one candidate.",
+            "Reference-view coverage and final candidate budget are separate: only the listed view bundles generate final images.",
             "Each view has its own ordered CAD anchors, candidates, visual-QA file, and final/best.png output.",
             "Stage and finalize each view with its own command templates after the host has inspected every full-resolution candidate.",
         ],
