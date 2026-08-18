@@ -35,11 +35,17 @@ from pipeline_prompts import (
     render_brief_prompt,
 )
 from render_aux_vtk import VTKAnchorRenderer
+from render_contract import (
+    build_output_contract,
+    load_and_validate_render_contract,
+    validate_retry_delta,
+    write_render_contract_bundle,
+)
 from runtime_layout import manifest_paths, output_layout
 from step_to_glb import convert_model
 
-PIPELINE_VERSION = "2.2.0"
-RENDER_PLAN_VERSION = "1.0"
+PIPELINE_VERSION = "3.0.0"
+RENDER_PLAN_VERSION = "1.1"
 DEFAULT_FINAL_VIEW_IDS = (
     "front",
     "back",
@@ -194,6 +200,25 @@ def _candidate_ids_for_views(view_ids: Sequence[str], counts: Sequence[int]) -> 
     return entries
 
 
+def _render_resolution(config: Mapping[str, Any], key: str) -> tuple[int, int]:
+    render = config["render"]
+    resolution = render.get(key)
+    if isinstance(resolution, Mapping):
+        width = resolution.get("width")
+        height = resolution.get("height")
+        if width is not None and height is not None:
+            return int(width), int(height)
+        if key == "final_anchor_resolution":
+            output = build_output_contract(config, ["F01"])["final_output"]
+            target_width = int(output["width"])
+            target_height = int(output["height"])
+            long_edge = max(target_width, target_height)
+            desired_long_edge = min(4096, max(2048, long_edge))
+            scale = desired_long_edge / long_edge
+            return max(256, int(round(target_width * scale))), max(256, int(round(target_height * scale)))
+    return int(render.get("width", 1024)), int(render.get("height", 1024))
+
+
 def _build_render_plan(
     config: Mapping[str, Any],
     discovery: Mapping[str, Any],
@@ -248,6 +273,12 @@ def _build_render_plan(
         )
 
     total_candidates = sum(int(item["candidate_count"]) for item in generation_views)
+    all_candidate_ids = [
+        str(candidate_id)
+        for item in generation_views
+        for candidate_id in item.get("candidate_ids", [])
+    ]
+    output_contract = build_output_contract(config, all_candidate_ids)
     return {
         "schema_version": RENDER_PLAN_VERSION,
         "status": "awaiting_user_confirmation",
@@ -287,17 +318,29 @@ def _build_render_plan(
             "total_candidate_count": total_candidates,
             "host_skill": str(config["generation"].get("host_skill", "imagegen")),
             "target_resolution": str(config["generation"].get("target_resolution", "4k")),
+            "requested_native_size": str(config["generation"].get("requested_native_size", "auto")),
+            "aspect_ratio": str(config["generation"].get("aspect_ratio", "auto")),
             "quality": str(config["generation"].get("quality", "high")),
             "detail_level": str(config["generation"].get("detail_level", "high")),
+            "output_format": str(config["generation"].get("output_format", "png")),
         },
+        "final_output": output_contract["final_output"],
         "editable_fields": [
             "reference_plan.view_ids",
             "generation_plan.views",
             "generation_plan.total_candidate_count",
             "generation_plan.host_skill",
             "generation_plan.target_resolution",
+            "generation_plan.requested_native_size",
+            "generation_plan.aspect_ratio",
             "generation_plan.quality",
             "generation_plan.detail_level",
+            "generation_plan.output_format",
+            "final_output.width",
+            "final_output.height",
+            "final_output.format",
+            "final_output.resize_policy",
+            "final_output.allow_upscale",
             "confirmation.confirmed",
         ],
         "notes": [
@@ -385,6 +428,19 @@ def _validate_render_plan(
     total = int(generation_plan.get("total_candidate_count", len(all_candidate_ids)))
     if total != len(all_candidate_ids):
         raise ConfigError("generation_plan.total_candidate_count must equal the sum of candidate IDs")
+    for key in ("host_skill", "target_resolution", "requested_native_size", "aspect_ratio", "quality", "detail_level", "output_format"):
+        if key not in generation_plan:
+            raise ConfigError(f"generation_plan.{key} is required by render-plan schema {RENDER_PLAN_VERSION}")
+    final_output = plan.get("final_output")
+    if not isinstance(final_output, Mapping):
+        raise ConfigError("render plan must contain final_output")
+    try:
+        final_width = int(final_output.get("width"))
+        final_height = int(final_output.get("height"))
+    except (TypeError, ValueError):
+        raise ConfigError("final_output.width and final_output.height must be integers") from None
+    if not 256 <= final_width <= 8192 or not 256 <= final_height <= 8192:
+        raise ConfigError("final_output dimensions must be between 256 and 8192")
     primary_ids = reference_plan.get("primary_view_ids", [])
     if primary_ids:
         if not isinstance(primary_ids, list):
@@ -399,6 +455,9 @@ def _validate_render_plan(
     normalized["generation_plan"]["views"] = normalized_views
     normalized["generation_plan"]["view_ids"] = [item["view_id"] for item in normalized_views]
     normalized["generation_plan"]["total_candidate_count"] = total
+    normalized["final_output"] = dict(final_output)
+    normalized["final_output"]["width"] = final_width
+    normalized["final_output"]["height"] = final_height
     return normalized
 
 
@@ -708,7 +767,7 @@ def _build_report(
         for bundle in view_bundles:
             lines.append(
                 f"- `{bundle.get('view_id')}` — {bundle.get('view_label', '')}: "
-                f"`{Path(str(bundle.get('root'))).resolve() / 'final' / 'best.png'}` after visual QA"
+                f"`{Path(str(bundle.get('root'))).resolve() / 'final' / 'best.png'}` after candidate QA, one final refinement, final QC, and the resolution gate"
             )
         lines.append("")
     if grid_only:
@@ -725,7 +784,7 @@ def _build_report(
             [
                 "## Next action",
                 "",
-                "Use `planning/host_handoff.json` to invoke the official image-generation skill/tool with the ordered inputs. Pass returned files directly to the stage command, perform host visual QA, and only then run finalize.",
+                "Use `planning/host_handoff.json` to invoke candidate generation from the frozen contract. Stage candidates, perform host QA and selection, generate one final master, then run final QC and finish through the resolution gate.",
                 "",
             ]
         )
@@ -746,6 +805,7 @@ def _build_report(
 
 def _prepare_view_bundle(
     renderer: VTKAnchorRenderer,
+    final_renderer: VTKAnchorRenderer,
     model_manifest: Mapping[str, Any],
     config: Mapping[str, Any],
     discovery: Mapping[str, Any],
@@ -754,6 +814,7 @@ def _prepare_view_bundle(
     references: Sequence[Mapping[str, Any]],
     render_brief_path: str | Path | None,
     strict_geometry: bool,
+    retry_delta_path: str | Path | None,
     shared_glb: str | Path,
     candidate_ids: Sequence[str] | None = None,
 ) -> dict[str, Any]:
@@ -762,6 +823,25 @@ def _prepare_view_bundle(
     layout = output_layout(root, create=True)
     planning_dir = layout["planning"]
     aux_dir = layout["auxiliary"]
+    previous_contract: dict[str, Any] | None = None
+    retry_delta: dict[str, Any] | None = None
+    if strict_geometry:
+        if not retry_delta_path:
+            raise ConfigError("--strict-geometry requires --retry-delta so the retry remains a frozen-contract patch")
+        previous_contract, _ = load_and_validate_render_contract(root)
+        raw_delta = _read_json(retry_delta_path)
+        if not isinstance(raw_delta, Mapping):
+            raise ConfigError("Retry-delta JSON must contain an object")
+        validate_retry_delta(previous_contract, raw_delta)
+        retry_delta = dict(raw_delta)
+
+    resolved_candidate_ids = [str(item) for item in (candidate_ids or [])]
+    if not resolved_candidate_ids:
+        candidate_count = int(config["generation"]["candidates"])
+        resolved_candidate_ids = [f"C{index:02d}" for index in range(1, candidate_count + 1)]
+    if strict_geometry:
+        resolved_candidate_ids = [f"R{index:02d}" for index in range(1, len(resolved_candidate_ids) + 1)]
+
     dump_resolved_config(config, root / "resolved_project.yaml")
     _write_json(root / "input_discovery.json", discovery)
     _write_json(planning_dir / "camera_plan.json", camera_plan)
@@ -773,6 +853,13 @@ def _prepare_view_bundle(
     model_copy = aux_dir / "model.glb"
     if shared_path != model_copy.resolve():
         shutil.copy2(shared_path, model_copy)
+
+    final_aux_dir = root / "final_refinement" / "auxiliary"
+    final_renderer.render_auxiliary_set(final_aux_dir, dict(camera_plan))
+    _write_json(final_aux_dir / "model_manifest.json", model_manifest)
+    final_model_copy = final_aux_dir / "model.glb"
+    if shared_path != final_model_copy.resolve():
+        shutil.copy2(shared_path, final_model_copy)
 
     brief_labels = [
         "CAD shaded color preview; pseudo-colors may be part IDs",
@@ -803,9 +890,21 @@ def _prepare_view_bundle(
     generation_inputs, input_roles = _build_generation_inputs(
         aux_files,
         references,
-        config["geometry"]["anchor_mode"],
+        "max_geometry" if strict_geometry else config["geometry"]["anchor_mode"],
     )
     _write_json(planning_dir / "input_roles.json", input_roles)
+    contract = write_render_contract_bundle(
+        root,
+        config=config,
+        config_fingerprint=config_fingerprint(config),
+        model_manifest=model_manifest,
+        camera_plan=camera_plan,
+        brief=brief,
+        input_roles=input_roles,
+        candidate_ids=resolved_candidate_ids,
+        retry_delta=retry_delta,
+        previous_contract=previous_contract,
+    )
     generation_prompt = build_generation_prompt(
         brief,
         input_roles,
@@ -815,18 +914,17 @@ def _prepare_view_bundle(
         target_resolution=str(config["generation"].get("target_resolution", "4k")),
         quality=str(config["generation"].get("quality", "high")),
         detail_level=str(config["generation"].get("detail_level", "high")),
+        render_contract=contract,
+        retry_delta=retry_delta,
     )
     (planning_dir / "final_prompt.txt").write_text(generation_prompt, encoding="utf-8")
-    resolved_candidate_ids = [str(item) for item in (candidate_ids or [])]
-    if not resolved_candidate_ids:
-        candidate_count = int(config["generation"]["candidates"])
-        resolved_candidate_ids = [f"C{index:02d}" for index in range(1, candidate_count + 1)]
     candidate_count = len(resolved_candidate_ids)
     imagegen_request = {
         "backend": "official_host_image_generation_skill_or_tool",
         "raw_api_required": False,
         "host_skill": str(config["generation"].get("host_skill", "imagegen")),
         "target_resolution": str(config["generation"].get("target_resolution", "4k")),
+        "requested_native_size": contract["generation"]["requested_native_size"],
         "detail_level": str(config["generation"].get("detail_level", "high")),
         "view_id": camera_plan.get("selected_view_id"),
         "view_label": camera_plan.get("view_label"),
@@ -836,11 +934,16 @@ def _prepare_view_bundle(
         "aspect_ratio": config["generation"]["aspect_ratio"],
         "quality": config["generation"]["quality"],
         "output_format": config["generation"]["output_format"],
+        "tool_parameters": contract["generation"]["tool_parameters"],
+        "exact_final_output": contract["final_output"],
+        "render_contract_path": str(planning_dir / "render_contract.json"),
+        "contract_id": contract["contract_id"],
+        "contract_revision": contract["contract_revision"],
         "prompt_path": str(planning_dir / "final_prompt.txt"),
         "input_images": [str(path) for path in generation_inputs],
         "input_roles_path": str(planning_dir / "input_roles.json"),
-        "instruction": "Invoke the host's official image-generation capability. Prefer one multi-output invocation; otherwise make separate invocations with the same ordered inputs and prompt.",
-        "resolution_policy": "Request the target resolution when the host exposes it; otherwise use the highest supported resolution and record actual dimensions.",
+        "instruction": "Read the frozen render contract. Pass supported machine fields from tool_parameters as real tool arguments; never reinterpret size, count, aspect, camera, or input order from chat.",
+        "resolution_policy": "Record actual native dimensions. Exact final delivery dimensions are enforced later by the independent resolution gate.",
     }
     _write_json(planning_dir / "imagegen_request.json", imagegen_request)
     write_generation_handoff(
@@ -851,16 +954,23 @@ def _prepare_view_bundle(
 
     view_manifest = {
         "pipeline_version": PIPELINE_VERSION,
-        "output_contract_version": "2.2",
+        "output_contract_version": "3.0",
         "status": "prepared_for_image_generation",
         "stage": "local_geometry_preparation",
         "view_id": camera_plan.get("selected_view_id"),
         "view_label": camera_plan.get("view_label"),
+        "render_contract": str(planning_dir / "render_contract.json"),
+        "contract_id": contract["contract_id"],
+        "contract_revision": contract["contract_revision"],
+        "candidate_anchor_resolution": contract["anchor_policy"]["candidate_anchor_resolution"],
+        "final_anchor_resolution": contract["anchor_policy"]["final_anchor_resolution"],
         "generation_backend": "host_official_image_generation_skill",
         "raw_image_api_used": False,
         "paths": manifest_paths(layout),
         "steps": [
             {"name": "auxiliary_passes", "status": "ok", "at": _now()},
+            {"name": "final_refinement_anchors", "status": "ok", "at": _now()},
+            {"name": "render_contract_freeze", "status": "ok", "at": _now()},
             {"name": "image_generation", "status": "delegated_to_host_tool", "at": _now()},
         ],
         "finished_at": _now(),
@@ -878,6 +988,8 @@ def _prepare_view_bundle(
         "camera_plan": dict(camera_plan),
         "imagegen_request": str(planning_dir / "imagegen_request.json"),
         "host_handoff": str(planning_dir / "host_handoff.json"),
+        "render_contract": str(planning_dir / "render_contract.json"),
+        "final_anchor_root": str(final_aux_dir),
         "candidate_ids": resolved_candidate_ids,
     }
 
@@ -919,8 +1031,19 @@ def _load_or_build_config(args: argparse.Namespace) -> tuple[dict[str, Any], dic
         cfg["geometry"]["anchor_mode"] = args.anchor_mode
     if args.width:
         cfg["render"]["width"] = int(args.width)
+        cfg["render"]["candidate_anchor_resolution"]["width"] = int(args.width)
     if args.height:
         cfg["render"]["height"] = int(args.height)
+        cfg["render"]["candidate_anchor_resolution"]["height"] = int(args.height)
+    for argument, section, key in (
+        ("view_grid_width", "view_grid_resolution", "width"),
+        ("view_grid_height", "view_grid_resolution", "height"),
+        ("final_anchor_width", "final_anchor_resolution", "width"),
+        ("final_anchor_height", "final_anchor_resolution", "height"),
+    ):
+        value = getattr(args, argument, None)
+        if value:
+            cfg["render"][section][key] = int(value)
     if args.candidates:
         cfg["generation"]["candidates"] = int(args.candidates)
     if args.aspect_ratio:
@@ -931,8 +1054,15 @@ def _load_or_build_config(args: argparse.Namespace) -> tuple[dict[str, Any], dic
         cfg["generation"]["host_skill"] = args.host_skill
     if args.target_resolution:
         cfg["generation"]["target_resolution"] = args.target_resolution
+    if args.requested_native_size:
+        cfg["generation"]["requested_native_size"] = args.requested_native_size
     if args.detail_level:
         cfg["generation"]["detail_level"] = args.detail_level
+    if args.final_width or args.final_height:
+        if not args.final_width or not args.final_height:
+            raise ConfigError("--final-width and --final-height must be supplied together")
+        cfg["final_output"]["width"] = int(args.final_width)
+        cfg["final_output"]["height"] = int(args.final_height)
     for key in ("azimuth", "elevation", "fov_deg", "framing", "projection"):
         value = getattr(args, key, None)
         if value is not None:
@@ -964,6 +1094,27 @@ def create_render_plan(
     return {"plan_path": str(target), "plan": plan}
 
 
+def _apply_confirmed_plan_contract(config: Mapping[str, Any], render_plan: Mapping[str, Any]) -> None:
+    if not isinstance(config, dict):
+        raise ConfigError("Resolved config must be mutable while applying the confirmed render plan")
+    generation_plan = render_plan["generation_plan"]
+    for key in (
+        "host_skill",
+        "target_resolution",
+        "requested_native_size",
+        "aspect_ratio",
+        "quality",
+        "detail_level",
+        "output_format",
+    ):
+        config["generation"][key] = generation_plan[key]
+    final_output = render_plan["final_output"]
+    for key in ("width", "height", "format", "resize_policy", "allow_upscale"):
+        if key in final_output:
+            config["final_output"][key] = final_output[key]
+    validate_config(config)
+
+
 def prepare_run(
     config: Mapping[str, Any],
     discovery: Mapping[str, Any],
@@ -974,6 +1125,7 @@ def prepare_run(
     reference_roles_path: str | Path | None = None,
     render_brief_path: str | Path | None = None,
     strict_geometry: bool = False,
+    retry_delta_path: str | Path | None = None,
     render_plan_path: str | Path | None = None,
 ) -> dict[str, Any]:
     output_dir = Path(str(config["project"]["output_dir"])).expanduser().resolve()
@@ -985,6 +1137,7 @@ def prepare_run(
     if render_plan_path:
         source_plan_path = Path(render_plan_path).expanduser().resolve()
         render_plan = _validate_render_plan(_read_json(source_plan_path), config, discovery)
+        _apply_confirmed_plan_contract(config, render_plan)
         # Keep the confirmed plan beside the generated evidence as the canonical run record.
         _write_json(planning_dir / "render_plan.json", render_plan)
     elif not grid_only:
@@ -992,12 +1145,17 @@ def prepare_run(
             "prepare requires a confirmed render plan. Run the plan command first, review "
             "planning/render_plan.json, set confirmation.confirmed to true, then pass --plan."
         )
+    if strict_geometry:
+        if not isinstance(config, dict):
+            raise ConfigError("Resolved config must be mutable for a contract-scoped retry")
+        config["geometry"]["anchor_mode"] = "max_geometry"
+        validate_config(config)
     dump_resolved_config(config, output_dir / "resolved_project.yaml")
     _write_json(output_dir / "input_discovery.json", discovery)
 
     run_manifest: dict[str, Any] = {
         "pipeline_version": PIPELINE_VERSION,
-        "output_contract_version": "2.1",
+        "output_contract_version": "3.0",
         "started_at": _now(),
         "status": "running",
         "stage": "local_geometry_preparation",
@@ -1014,7 +1172,7 @@ def prepare_run(
     }
     _write_json(output_dir / "run_manifest.json", run_manifest)
 
-    renderer: VTKAnchorRenderer | None = None
+    renderers: list[VTKAnchorRenderer] = []
     try:
         _log("Converting the CAD model to GLB")
         glb_path = aux_dir / "model.glb"
@@ -1032,17 +1190,19 @@ def prepare_run(
 
         if config["render"]["aux_backend"] not in {"auto", "vtk"}:
             raise RuntimeError("The packaged deterministic backend is VTK. Use render.aux_backend=auto or vtk.")
-        renderer = VTKAnchorRenderer(
+        grid_width, grid_height = _render_resolution(config, "view_grid_resolution")
+        grid_renderer = VTKAnchorRenderer(
             glb_path,
-            width=int(config["render"]["width"]),
-            height=int(config["render"]["height"]),
+            width=grid_width,
+            height=grid_height,
             background_rgb=config["render"]["background_rgb"],
             source_has_useful_colors=bool(model_manifest.get("source_has_useful_colors")),
             color_mode=config["geometry"]["color_mode"],
         )
+        renderers.append(grid_renderer)
         base_camera = _camera_base(config)
         _log("Rendering the deterministic camera view grid")
-        view_result = renderer.render_view_grid(
+        view_result = grid_renderer.render_view_grid(
             aux_dir,
             base_camera,
             azimuths=config["camera"]["view_grid_azimuths"],
@@ -1091,6 +1251,26 @@ def prepare_run(
             _log(f"View-grid stage complete: {view_result['view_grid']}")
             return run_manifest
 
+        candidate_width, candidate_height = _render_resolution(config, "candidate_anchor_resolution")
+        final_width, final_height = _render_resolution(config, "final_anchor_resolution")
+        renderer = VTKAnchorRenderer(
+            glb_path,
+            width=candidate_width,
+            height=candidate_height,
+            background_rgb=config["render"]["background_rgb"],
+            source_has_useful_colors=bool(model_manifest.get("source_has_useful_colors")),
+            color_mode=config["geometry"]["color_mode"],
+        )
+        final_renderer = VTKAnchorRenderer(
+            glb_path,
+            width=final_width,
+            height=final_height,
+            background_rgb=config["render"]["background_rgb"],
+            source_has_useful_colors=bool(model_manifest.get("source_has_useful_colors")),
+            color_mode=config["geometry"]["color_mode"],
+        )
+        renderers.extend([renderer, final_renderer])
+
         generation_views = (
             render_plan.get("generation_plan", {}).get("views", []) if render_plan else []
         )
@@ -1115,6 +1295,7 @@ def prepare_run(
             view_bundles.append(
                 _prepare_view_bundle(
                     renderer,
+                    final_renderer,
                     model_manifest,
                     config,
                     discovery,
@@ -1123,6 +1304,7 @@ def prepare_run(
                     references,
                     render_brief_path,
                     strict_geometry,
+                    retry_delta_path,
                     aux_dir / "model.glb",
                     candidate_ids=candidate_ids_by_view.get(
                         str(camera_plans[0].get("selected_view_id")),
@@ -1139,6 +1321,7 @@ def prepare_run(
                 view_bundles.append(
                     _prepare_view_bundle(
                         renderer,
+                        final_renderer,
                         model_manifest,
                         config,
                         discovery,
@@ -1147,6 +1330,7 @@ def prepare_run(
                         references,
                         render_brief_path,
                         strict_geometry,
+                        retry_delta_path,
                         aux_dir / "model.glb",
                         candidate_ids=candidate_ids_by_view.get(selected_id),
                     )
@@ -1166,6 +1350,7 @@ def prepare_run(
                 "raw_api_required": False,
                 "host_skill": str(config["generation"].get("host_skill", "imagegen")),
                 "target_resolution": str(config["generation"].get("target_resolution", "4k")),
+                "requested_native_size": str(config["generation"].get("requested_native_size", "auto")),
                 "detail_level": str(config["generation"].get("detail_level", "high")),
                 "view_set": render_plan.get("reference_plan", {}).get("view_set", "all") if render_plan else "all",
                 "view_count": len(view_bundles),
@@ -1176,8 +1361,9 @@ def prepare_run(
                 "quality": config["generation"]["quality"],
                 "output_format": config["generation"]["output_format"],
                 "views": view_bundles,
-                "instruction": "Run the official image-generation handoff independently for every view bundle; preserve each view's CAD camera and never merge view directions into one candidate.",
-                "resolution_policy": "Request the target resolution for every view; record actual dimensions if the host cannot expose exact 4K control.",
+                "render_contracts": [str(bundle.get("render_contract")) for bundle in view_bundles],
+                "instruction": "Run each view's frozen render contract independently. Use file tool parameters without chat reinterpretation; never merge view directions into one candidate.",
+                "resolution_policy": "Record native candidate dimensions; exact final dimensions are enforced after one independent final-refinement pass per view.",
             }
             _write_json(
                 planning_dir / "view_set.json",
@@ -1232,8 +1418,8 @@ def prepare_run(
         _write_json(output_dir / "run_manifest.json", run_manifest)
         raise
     finally:
-        if renderer is not None:
-            renderer.close()
+        for active_renderer in reversed(renderers):
+            active_renderer.close()
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -1274,16 +1460,24 @@ def _build_parser() -> argparse.ArgumentParser:
     planning.add_argument("--reference-roles", help="Host-generated reference-role JSON")
     planning.add_argument("--render-brief", help="Host-generated rendering brief JSON")
     planning.add_argument("--strict-geometry", action="store_true", help="Build a one-time geometry recovery prompt")
+    planning.add_argument("--retry-delta", help="Contract-scoped retry delta JSON; required with --strict-geometry")
 
     options = parser.add_argument_group("local preparation")
     options.add_argument("--anchor-mode", choices=["compact", "balanced", "max_geometry"])
     options.add_argument("--width", type=int)
     options.add_argument("--height", type=int)
+    options.add_argument("--view-grid-width", type=int)
+    options.add_argument("--view-grid-height", type=int)
+    options.add_argument("--final-anchor-width", type=int)
+    options.add_argument("--final-anchor-height", type=int)
     options.add_argument("--candidates", type=int)
     options.add_argument("--aspect-ratio", choices=["auto", "1:1", "4:3", "3:4", "16:9", "9:16"])
     options.add_argument("--quality", choices=["auto", "draft", "standard", "high"])
     options.add_argument("--host-skill", choices=["imagegen", "auto"], help="Official host Skill; imagegen is the default")
     options.add_argument("--target-resolution", choices=["auto", "2k", "4k"], help="Target host output resolution; 4k is the default")
+    options.add_argument("--requested-native-size", help="Exact host size tool parameter such as 1536x1024, or auto")
+    options.add_argument("--final-width", type=int, help="Exact final delivery width in pixels")
+    options.add_argument("--final-height", type=int, help="Exact final delivery height in pixels")
     options.add_argument("--detail-level", choices=["standard", "high"], help="Requested visual detail; high is the default")
     return parser
 
@@ -1312,6 +1506,7 @@ def main() -> int:
                 reference_roles_path=args.reference_roles,
                 render_brief_path=args.render_brief,
                 strict_geometry=args.strict_geometry,
+                retry_delta_path=args.retry_delta,
                 render_plan_path=args.plan,
             )
     except (ConfigError, InputDiscoveryError, FileNotFoundError, RuntimeError, ValueError) as exc:

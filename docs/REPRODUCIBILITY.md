@@ -19,8 +19,10 @@ A shareable run should contain:
 - sanitized relative paths;
 - the selected converter and geometry settings;
 - camera plan and render dimensions;
-- auxiliary image dimensions and nonblank checks;
-- candidate IDs and visual-QA decision;
+- contract ID/revision, component hashes, and frozen-field consistency result;
+- view-grid, candidate-anchor, and final-anchor dimensions plus nonblank checks;
+- candidate IDs, native pixel report, and visual-QA decision;
+- final-master native size, exact delivered size, resampled/upscaled flags, and final-QC gates;
 - final report and known limitations.
 
 Do not copy raw `run_manifest.json`, `host_handoff.json`, or `resolved_project.yaml` from a workstation without reviewing them. They may contain absolute paths, temporary host paths, or private prompt content.
@@ -65,8 +67,10 @@ Before publishing a new example:
 - 脱敏后的相对路径；
 - 使用的转换器与几何设置；
 - 相机规划与渲染尺寸；
-- 辅助图尺寸与非空检查；
-- 候选 ID 与视觉 QA 决定；
+- 合同 ID/revision、组件哈希和冻结字段一致性结果；
+- 相机网格、候选锚点、最终锚点尺寸与非空检查；
+- 候选 ID、原生像素报告与视觉 QA 决定；
+- 最终母图原生尺寸、精确交付尺寸、重采样/放大标记和最终 QC 门禁；
 - 最终报告和已知局限。
 
 不要未经审查就复制工作站生成的 `run_manifest.json`、`host_handoff.json` 或 `resolved_project.yaml`。它们可能含有绝对路径、宿主临时路径或私有提示词。

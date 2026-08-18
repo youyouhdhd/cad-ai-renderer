@@ -14,8 +14,10 @@ This document is for maintainers who need to understand the boundaries between C
 | `run.py` | Find a compatible interpreter, create/reuse the managed environment, dispatch subcommands | Installing into the global interpreter |
 | `step_to_glb.py`, `freecad_step_export.py` | Convert CAD inputs into a renderable intermediate | Claiming generated-image geometry is mathematically exact |
 | `render_aux_vtk.py` and `cad_render.py` | Create named directional view grids, per-view bundles, and deterministic auxiliary maps | Producing the final beauty image |
-| `pipeline_prompts.py`, `host_handoff.py` | Serialize planning and host handoff artifacts | Calling a raw remote image API |
-| `finalize_candidates.py` | Stage candidates, calculate local diagnostics, ingest visual QA, finalize | Replacing visual QA with a local score |
+| `render_contract.py` | Compile/freeze geometry, scene, output, anchor, and retry contracts; detect drift | Reinterpreting frozen fields from chat |
+| `pipeline_prompts.py`, `host_handoff.py` | Compile prompts and tool handoffs from the frozen contract | Calling a raw remote image API |
+| `finalize_candidates.py` | Stage candidates, record native pixels, ingest visual QA, select a source | Creating the final delivered image |
+| `final_refinement.py` | Stage one final master, run final QC and resolution/contract gates, deliver exact pixels | Claiming resampled pixels are native detail |
 | Optional ComfyUI client | Add one geometry guard before a strict retry | Becoming the default render backend or retry loop |
 
 ### Data flow
@@ -38,12 +40,12 @@ model + references + intent
    camera grid and directional view plan
             │
             ▼
-       per-view CAD bundles
+       stage-aware CAD bundles
   color / clay / lineart / mask
   normal / depth / part-ID maps
             │
             ▼
-      host handoff bundle
+     frozen render contract
             │
             ▼
         candidate images
@@ -52,7 +54,16 @@ model + references + intent
   local diagnostics + contact sheet
             │
             ▼
-   host visual QA and final report
+   host visual QA + selection
+            │
+            ▼
+ one frozen final-refinement master
+            │
+            ▼
+ final QC + exact-pixel resolution gate
+            │
+            ▼
+     final image and report
 ```
 
 The run directory is the persistence boundary. A normal run is portable when its manifests contain repository-relative or run-relative paths. Host-only paths may exist during a live handoff but must not be copied into a public example.
@@ -67,10 +78,12 @@ The run directory is the persistence boundary. A normal run is portable when its
    covers six principal and eight axonometric directions, while final generation is limited to four
    candidates total (front, back, left, and one upper axonometric). An explicit user view is placed
    first in the reference plan and receives all final candidates; an explicit quantity applies there.
-5. **Stage before finalize.** Candidates are copied into stable run-owned locations and locally ranked before visual QA. Staging alone never writes the final image.
-6. **One targeted retry.** Geometry recovery is bounded. A failed guard must not become an unlimited generation loop.
-7. **Reference target without a model lock.** GPT Image 2 is the primary reference target for product-image evaluation when available, while the host handoff remains model-neutral and the package never embeds an image API client or credential.
-8. **Codex image-generation default.** The handoff prefers the official `$imagegen` Skill and requests 4K, high quality, and high detail. When exact host resolution controls are unavailable, the actual dimensions are recorded rather than overstated.
+5. **Files before prompts.** `render_contract.json` is authoritative; prompts and host calls are compiled projections. Supported size/count/quality fields become actual tool parameters.
+6. **Native size is not delivery size.** Candidate and final-master native pixels are recorded separately from exact final pixels. Resampling/upscaling receives a distinct status.
+7. **Select before final refinement.** Candidate QA writes a selection and one refine request. Only final-QC-backed `finish` creates `final/best.*`.
+8. **One targeted contract-delta retry.** Geometry recovery increments the same contract revision and cannot drift camera, geometry, anchors, references, aspect ratio, count, or final pixels.
+9. **Reference target without a model lock.** GPT Image 2 is the primary reference target for product-image evaluation when available, while the host handoff remains model-neutral and the package never embeds an image API client or credential.
+10. **Codex image-generation default.** The handoff prefers the official `$imagegen` Skill, records actual native dimensions, and enforces exact final dimensions independently.
 
 ### Failure modes
 
@@ -79,6 +92,8 @@ The run directory is the persistence boundary. A normal run is portable when its
 - **STEP conversion failure:** return the input and converter diagnostics; do not fabricate a geometry pass.
 - **Blank or invalid auxiliary image:** fail validation before host handoff.
 - **Host generation unavailable:** return the preparation bundle and prompt; do not silently change providers.
+- **Frozen contract mismatch:** refuse staging/refinement/finish and report the changed file or hash.
+- **Native size below final target:** deliver exact dimensions only when policy permits and report `upscaled: true`.
 - **Geometry drift in all candidates:** permit at most the configured strict retry, then report that visual QA did not pass.
 - **Conflicting local and visual ranking:** preserve the host visual-QA decision and record the disagreement in the final report.
 
@@ -110,8 +125,10 @@ The run directory is the persistence boundary. A normal run is portable when its
 | `run.py` | 查找兼容解释器、创建/复用隔离环境、分发子命令 | 向全局解释器安装依赖 |
 | `step_to_glb.py`、`freecad_step_export.py` | 把 CAD 输入转换为可渲染中间格式 | 声称生成图像具备数学级精确几何 |
 | `render_aux_vtk.py`、`cad_render.py` | 生成命名方向视角网格、逐视角 bundle 和确定性辅助图 | 生成最终商业效果图 |
-| `pipeline_prompts.py`、`host_handoff.py` | 序列化规划与宿主交接文件 | 调用原始远程生图 API |
-| `finalize_candidates.py` | 暂存候选、计算本地诊断、读取视觉 QA、定稿 | 用本地分数替代视觉 QA |
+| `render_contract.py` | 编译并冻结几何、场景、输出、锚点和重试合同；检测漂移 | 从聊天重新解释冻结字段 |
+| `pipeline_prompts.py`、`host_handoff.py` | 从冻结合同编译 Prompt 与工具交接 | 调用原始远程生图 API |
+| `finalize_candidates.py` | 暂存候选、记录原生像素、读取视觉 QA、选择来源 | 创建最终交付图 |
+| `final_refinement.py` | 暂存唯一最终母图，执行最终 QA、分辨率/合同门禁并交付精确像素 | 把重采样像素称为原生细节 |
 | 可选 ComfyUI 客户端 | 在一次严格重试前提供几何守卫 | 变成默认渲染后端或无限重试循环 |
 
 ### 数据流
@@ -134,12 +151,12 @@ The run directory is the persistence boundary. A normal run is portable when its
        相机网格和方向视角规划
           │
           ▼
-      逐视角 CAD bundle
+      分阶段逐视角 CAD bundle
 颜色 / 黏土 / 线稿 / 遮罩
 法线 / 深度 / 部件 ID 图
           │
           ▼
-    宿主交接准备包
+      冻结渲染合同
           │
           ▼
         候选图像
@@ -148,7 +165,16 @@ The run directory is the persistence boundary. A normal run is portable when its
    本地诊断 + 联系表
           │
           ▼
-  宿主视觉 QA 与最终报告
+  宿主视觉 QA 与候选选择
+          │
+          ▼
+  一次冻结的最终精修母图
+          │
+          ▼
+ 最终 QC + 精确像素分辨率门禁
+          │
+          ▼
+      最终图与报告
 ```
 
 运行目录是持久化边界。只要清单使用仓库相对路径或运行目录相对路径，运行结果就更容易迁移。宿主临时路径可以在实时交接中存在，但不应复制进公开示例。
@@ -159,10 +185,12 @@ The run directory is the persistence boundary. A normal run is portable when its
 2. **隔离环境。** 启动器可选择兼容的 64 位 CPython 3.10–3.13，创建隔离环境，恢复中断安装，并在分发命令前验证依赖。
 3. **先证据后生成。** 传统 CAD 工具先提供结构证据，宿主官方生图能力再结合证据和自然语言要求生成图片。
 4. **参考覆盖与最终生成分离。** 在 CAD 渲染前先写出一份用户确认的可编辑计划；未指定视角时，确定性参考证据覆盖六个主视图和八个轴测方向，但最终只生成四张候选（前、后、左、一个上方轴测）。用户指定视角时，该视角排在参考计划首位并承载全部最终候选；指定数量也只作用于该视角。
-5. **先暂存后定稿。** 候选图先复制到运行目录并做本地诊断；暂存阶段永远不写最终图。
-6. **最多一次定向重试。** 几何恢复是有上限的，失败后不能变成无限生图循环。
-7. **有参考目标但不锁定模型。** 在宿主提供时，GPT Image 2 是产品效果图评估的主要参考目标；宿主交接仍保持模型中立，包内不嵌入生图 API 客户端或凭据。
-8. **默认 Codex 生图。** 交接默认优先使用官方 `$imagegen` Skill，并请求 4K、高质量、高细节；宿主无法精确控制分辨率时记录实际尺寸，不夸大输出能力。
+5. **先文件后 Prompt。** `render_contract.json` 是权威源；Prompt 和宿主调用只是编译投影，尺寸/数量/质量等可传字段必须作为真实工具参数。
+6. **原生尺寸不等于交付尺寸。** 分别记录候选/母图原生像素和最终精确像素；重采样、放大必须使用独立状态。
+7. **先选候选，再做最终精修。** 候选 QA 只写选择与一次精修请求；只有通过最终 QC 的 `finish` 才创建 `final/best.*`。
+8. **最多一次合同补丁式重试。** 保持同一合同 ID、递增 revision，禁止相机、几何、锚点、参考图角色、宽高比、数量和最终像素漂移。
+9. **有参考目标但不锁定模型。** 在宿主提供时，GPT Image 2 是产品效果图评估的主要参考目标；宿主交接仍保持模型中立，包内不嵌入生图 API 客户端或凭据。
+10. **默认 Codex 生图。** 交接默认优先使用官方 `$imagegen` Skill，记录实际原生尺寸，并由独立门禁强制最终精确像素。
 
 ### 失败模式
 

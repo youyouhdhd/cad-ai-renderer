@@ -1,6 +1,6 @@
 ---
 name: cad-ai-renderer
-description: Generate geometry-anchored industrial product renders from an attached STEP/STP CAD model or supported mesh plus optional reference images as a reusable Codex Skill. Use when Codex must inspect CAD geometry, create deterministic multi-direction camera coverage or a specified camera, silhouette, clay, line-art, depth, normal, and part-ID evidence, then guide the host's official image-generation capability through high-detail candidate product visualization, camera matching, visual QA, and final selection while preserving visible proportions, topology, holes, seams, and part placement. Discover attachments automatically, self-initialize a dedicated CAD/VTK Python environment, use 3D only as geometry evidence, and delegate final rendering to the host rather than a raw API client.
+description: Generate geometry-anchored industrial product renders from attached STEP/STP CAD or supported meshes through a frozen, auditable render contract. Use when Codex must inspect CAD geometry, create deterministic multi-view and stage-aware high-resolution anchors, preserve camera/silhouette/topology/holes/seams/part placement, delegate candidate and final-refinement images to the host's official image-generation capability, enforce exact final pixel dimensions with native/resampled/upscaled reporting, run geometry/resolution/visual/contract gates, or perform one contract-scoped retry without camera or output drift.
 ---
 
 # CAD AI Renderer
@@ -9,7 +9,11 @@ description: Generate geometry-anchored industrial product renders from an attac
 
 Treat the current host conversation model as the planner and visual judge. Keep runtime execution model-neutral: do not add model IDs, model locks, routing restrictions, or reasoning-mode requirements to the Skill contract. Public documentation may name GPT Image 2 as a reference target, but execution must continue to use the host's currently supported official image-generation capability.
 
-Use the host's official image-generation skill or tool for final images. Prefer the official Codex `$imagegen` Skill when it is exposed; otherwise use the host's official image-generation tool. The default handoff requests 4K output at high quality and high detail. If the host cannot expose exact 4K controls, use its highest supported resolution and record actual dimensions instead of claiming native 4K. Do not call a raw image API from bundled Python, do not request an API key, and do not substitute a third-party generator silently.
+Use the host's official image-generation skill or tool for candidate and final-refinement images. Prefer the official Codex `$imagegen` Skill when exposed. Do not call a raw image API, request an API key, or silently substitute a third-party generator.
+
+Treat `planning/render_contract.json` as the only generation authority after preparation. It freezes camera, geometry, input order, aspect ratio, candidate count, final dimensions, and anchor policy. Prompt files are compiled projections. Pass supported values from `tool_parameters` as real host-tool arguments; never reconstruct them from chat.
+
+Keep requested native generation size separate from exact final delivery size. Record actual native pixels. If the final image is resampled or upscaled to meet exact dimensions, report that state explicitly and never call it native 4K.
 
 Use CAD, FreeCAD, Blender, VTK, or ComfyUI only to create deterministic geometry evidence. Do not treat a traditional renderer as the default beauty renderer.
 
@@ -62,6 +66,8 @@ python scripts/run.py plan ...
 python scripts/run.py prepare ...
 python scripts/run.py stage ...
 python scripts/run.py finalize ...
+python scripts/run.py refine-stage ...
+python scripts/run.py finish ...
 python scripts/run.py self-test ...
 ```
 
@@ -187,7 +193,7 @@ When the model is colorless:
 
 Write `planning/render_brief.host.json` using `references/PROMPTING.md`.
 
-### 6. Render the confirmed reference and final auxiliary sets
+### 6. Render stage-aware anchors and freeze the render contract
 
 Run preparation again with the host-generated plans:
 
@@ -216,6 +222,12 @@ Generate and retain:
 - `camera.json`.
 - `model_manifest.json`.
 
+Use three independent anchor resolutions from the resolved config:
+
+- `view_grid_resolution`: camera selection only; default 768×768 renderer input.
+- `candidate_anchor_resolution`: candidate generation and QA; default 1024×1024.
+- `final_anchor_resolution`: final refinement and final QC; defaults adapt to the exact output aspect ratio with a 2048-4096 long edge.
+
 For the default path, `auxiliary/view_grid.png` and its thumbnails cover the broad reference plan,
 while independent auxiliary bundles under `views/<view-id>/` exist only for the final views in the
 confirmed generation plan. Do not reuse one view's auxiliary images as another view's geometry evidence.
@@ -230,7 +242,16 @@ Use anchor modes as follows:
 
 Always output all auxiliary passes even when only a subset is sent to image generation.
 
-### 7. Invoke the official image-generation skill or tool
+Preparation must compile and freeze these authoritative files per final view:
+
+- `geometry_contract.json`: structured hard/guarded/soft constraints with IDs, priority, preservation space, source, and verification method.
+- `scene_contract.json`: appearance plus scene policy.
+- `output_contract.json`: requested native size, exact final dimensions, resize policy, and resolution gate.
+- `render_contract.json`: contract ID/revision, fingerprints, frozen/mutable fields, source revisions, anchor policy, and retry policy.
+
+Refuse staging, selection, refinement, or finish when contract hashes or frozen source revisions drift.
+
+### 7. Invoke candidate generation from files
 
 Read the per-view files when a multi-view bundle exists; otherwise read the root files:
 
@@ -239,6 +260,8 @@ Read the per-view files when a multi-view bundle exists; otherwise read the root
 - `planning/input_roles.json`.
 
 Pass the listed input images in exactly that order to the official image-generation capability. Keep each image's role explicit in the prompt.
+
+Read `render_contract.json` first. Use `imagegen_request.json.tool_parameters` for supported tool arguments such as size, quality, format, and candidate count. Do not rewrite camera, count, aspect ratio, final dimensions, or ordered inputs from conversation context.
 
 Use the host's official `$imagegen` Skill by default when it is exposed. Follow the confirmed
 `generation_plan.views` exactly:
@@ -277,6 +300,8 @@ command must return `awaiting_visual_qa`, create the contact sheet and QA prompt
 `final/best.*` and `final/selection.json` absent. Treat local edge and silhouette metrics as weak
 diagnostics only; never let them create a provisional best image.
 
+Staging also writes `candidates/candidate_resolution_report.json` from the real image pixels. Candidate IDs and order must exactly match the frozen contract.
+
 ### 9. Perform visual QA with the host model
 
 Inspect the CAD anchors, contact sheet, and each candidate at full resolution. Score:
@@ -296,23 +321,45 @@ python scripts/run.py finalize \
   --visual-qa /path/to/run-output/planning/visual_qa.host.json
 ```
 
-Finalize from the stable copies created by `stage`; do not repeat temporary image-generator paths. Supply `--candidate` during finalize only when deliberately replacing or adding a candidate.
+Finalize from the stable copies created by `stage`; do not repeat temporary generator paths. It writes `final/selection.json`, `planning/final_refine_prompt.txt`, and `planning/final_refine_request.json`. It must not create `final/best.*`.
 
-Gate selection on geometry before beauty. Return `complete_with_geometry_warning` when no candidate passes; do not lower the threshold automatically.
+Gate selection on geometry before beauty. Preserve a geometry warning in the next-stage status when no candidate passes; do not lower the threshold automatically.
 
-### 10. Retry at most once
+### 10. Generate one final master and finish through all gates
+
+Invoke the official image-generation capability exactly once from `final_refine_request.json`. Use the selected candidate plus the ordered high-resolution CAD anchors. Camera, composition, geometry, aspect ratio, scene, and final dimensions are frozen; only material micro-detail, edges, anti-aliasing, reflection smoothness, and clarity may improve.
+
+Stage the returned master:
+
+```bash
+python scripts/run.py refine-stage \
+  --run /path/to/run-output \
+  --master F01=/path/to/generated-final-master.png
+```
+
+Inspect F01 against the final anchors and `final_refinement/resolution_report.json`. Write `planning/final_qc.host.json` from the template, then finish:
+
+```bash
+python scripts/run.py finish \
+  --run /path/to/run-output \
+  --final-qa /path/to/run-output/planning/final_qc.host.json
+```
+
+Only `finish` may create `final/best.*`. It must write `final/resolution_report.json` and `final/final_qc.json`, and evaluate geometry, native resolution, exact delivery resolution, visual quality, and contract consistency separately. Pure `complete` requires every gate including native size. Use `complete_exact_dimensions_upscaled` or `complete_exact_dimensions_resampled` when exact delivery pixels were produced non-natively.
+
+### 11. Retry at most once
 
 Retry only when a material geometry error is visible. Name exact failures such as a missing hole, moved seam, merged part, changed camera, widened base, or added control.
 
-Re-run preparation with:
+Copy `planning/retry_delta.template.json`, set `retry_from_contract_revision`, list exact failures, and re-run preparation with:
 
 ```bash
---anchor-mode max_geometry --strict-geometry
+--strict-geometry --retry-delta /path/to/retry_delta.json
 ```
 
 Optionally use the configured ComfyUI depth/canny guard before the retry. Feed its output as an additional structural reference, not as the final render.
 
-Generate one replacement batch only. Label retry images `R01` onward, include them in final QA, and never enter an open-ended regeneration loop.
+The retry is a patch against the same contract ID: camera, geometry contract, reference roles, anchor resolutions, aspect ratio, candidate count, and final dimensions remain frozen. Only exact failures, `max_geometry` anchors, and explicitly allowed material/lighting deltas may change. Generate one replacement batch only, label it `R01` onward, and never enter an open-ended loop.
 
 ## STEP handling
 
@@ -357,6 +404,11 @@ output/
     render_brief_prompt.txt
     render_brief.json
     render_brief.host.json          # when host analysis is used
+    geometry_contract.json
+    scene_contract.json
+    output_contract.json
+    render_contract.json            # frozen generation authority
+    retry_delta.template.json
     input_roles.json
     final_prompt.txt
     imagegen_request.json
@@ -366,6 +418,10 @@ output/
     qa_prompt.txt
     visual_qa.json
     visual_qa.host.json             # when host analysis is used
+    final_refine_prompt.txt
+    final_refine_request.json
+    final_qc.template.json
+    final_qc.host.json
   views/                            # only final-generation views from the confirmed plan
     <view-id>/
       auxiliary/
@@ -376,16 +432,23 @@ output/
     images/
     local_scores.json
     scores.json
+    candidate_resolution_report.json
     contact_sheet.png
+  final_refinement/
+    auxiliary/                      # high-resolution CAD anchors
+    master_source.png
+    resolution_report.json
   final/
     best.png
     selection.json
+    resolution_report.json
+    final_qc.json
     report.md
 ```
 
 Always write new deterministic passes under `auxiliary/`. When reading an old POSIX run, accept the legacy `aux/` directory, but never create `aux/` because `AUX` is a reserved Windows device name.
 
-Only visual-QA-backed finalization creates `final/best.*`. Rebuild `final/report.md` from structured artifacts on every stage/finalize call; never append duplicate report sections or hand-edit it.
+Only final-QC-backed `finish` creates `final/best.*`. Rebuild `final/report.md` from structured artifacts on every stage; never append duplicate report sections or hand-edit it.
 
 Return links to at least:
 

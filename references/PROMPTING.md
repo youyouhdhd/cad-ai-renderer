@@ -39,13 +39,19 @@ Use the reference only for satin aluminum grain, graphite polymer, soft upper-le
 
 ## Geometry recovery prompt
 
-Name exact failures:
+Name exact failures in `retry_delta.json`; the retry prompt is compiled from that patch and the unchanged frozen contract:
 
 ```text
 The previous result removed the two circular mounting holes, moved the center seam upward, and widened the base. Restore those three features to the CAD lineart and mask. Keep the selected camera unchanged.
 ```
 
 Avoid vague language such as “make it closer to the model.”
+
+Do not add camera, crop, aspect-ratio, output-size, reference-role, or geometry-contract changes to a retry. Material and lighting deltas are allowed only in their explicit mutable fields.
+
+## Final refinement prompt
+
+Use the selected candidate as the frozen composition/scene/appearance source and the high-resolution CAD anchors as geometry truth. Allow only material micro-detail, edge quality, anti-aliasing, reflection smoothness, and clarity. Explicitly freeze camera, crop, object placement, geometry, scene, aspect ratio, and final pixel contract. Generate exactly one F01 master.
 
 ## Final image requirements
 

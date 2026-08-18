@@ -38,8 +38,11 @@ geometry:
 
 render:
   aux_backend: auto          # auto currently resolves to vtk
-  width: 1024
+  width: 1024                # backward-compatible candidate-anchor alias
   height: 1024
+  view_grid_resolution: {width: 768, height: 768}
+  candidate_anchor_resolution: {width: 1024, height: 1024}
+  final_anchor_resolution: {width: 2048, height: 2048}
   background_rgb: [0.94, 0.94, 0.94]
   transparent_aux: false
 
@@ -47,11 +50,22 @@ generation:
   candidates: 4
   aspect_ratio: "1:1"
   quality: high              # auto, draft, standard, high
+  target_resolution: 4k
+  requested_native_size: auto  # auto or WIDTHxHEIGHT tool parameter
+  detail_level: high
   output_format: png
   max_retries: 1
 
+final_output:
+  width: 3840
+  height: 2160
+  format: png
+  resize_policy: fit_pad
+  allow_upscale: true
+
 qa:
   min_geometry_score: 75
+  min_visual_quality_score: 75
   local_weight: 0.35
   visual_weight: 0.65
   max_edge_distance_px: 18

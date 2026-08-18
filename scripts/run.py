@@ -35,6 +35,8 @@ COMMANDS: dict[str, tuple[str, list[str]] | None] = {
     "prepare": ("cad_render.py", []),
     "stage": ("finalize_candidates.py", ["--stage-only"]),
     "finalize": ("finalize_candidates.py", []),
+    "refine-stage": ("final_refinement.py", ["--stage-only"]),
+    "finish": ("final_refinement.py", []),
     "metrics": ("geometry_metrics.py", []),
     "self-test": ("self_test.py", []),
 }
@@ -66,6 +68,7 @@ HOST_LINK_NAME = "cad_ai_renderer_host_packages.pth"
 BOOTSTRAP_MARKER = "CAD_AI_RENDERER_BOOTSTRAPPED"
 LOCK_WAIT_SECONDS = 900
 LOCK_STALE_SECONDS = 1800
+LOCK_OWNER_GRACE_SECONDS = 5
 
 
 def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
@@ -510,7 +513,10 @@ def _lock_is_stale(lock_dir: Path) -> bool:
     owner_host = str(owner.get("hostname", "")).strip()
     current_host = socket.gethostname()
     if not owner_host:
-        return True
+        # Another process can observe the lock directory in the tiny interval
+        # between mkdir and the atomic owner-file replace. Give that creator a
+        # short grace period instead of deleting the directory underneath it.
+        return age > LOCK_OWNER_GRACE_SECONDS
     if owner_host != current_host:
         # A lock copied with a project or cache cannot be owned by a process on
         # this machine. Treat host mismatch as a migration artifact instead of

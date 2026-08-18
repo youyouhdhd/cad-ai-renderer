@@ -56,7 +56,7 @@ GPT Image 2 可以负责材质、灯光、反射、环境和展示质量；CAD �
 - 转换 STEP/STP 或支持的网格模型；在转换器支持时保留叶子部件结构。
 - 生成确定性的 CAD 证据：相机网格、颜色预览、黏土图、线稿、轮廓遮罩、相机空间法线、深度图和部件 ID 图。
 - 为宿主官方生图能力生成结构化规划与交接文件。
-- 暂存多个候选图，计算本地几何诊断，接收宿主视觉 QA，然后最终选定一张图。
+- 将几何、场景和输出字段冻结为可校验合同，记录原生像素，通过宿主 QA 选择候选，再生成一次最终精修母图，并以原生/重采样/放大状态交付精确尺寸。
 - 支持一次定向的几何恢复重试，以及可选的 ComfyUI 深度/边缘几何守卫。
 
 ## 非目标与边界
@@ -83,13 +83,19 @@ GPT Image 2 可以负责材质、灯光、反射、环境和展示质量；CAD �
                     确定性的辅助通道
                              │
                              ▼
-                    宿主官方生图交接
+                    冻结渲染合同与交接
                              │
                              ▼
                   候选暂存 + 本地几何诊断
                              │
                              ▼
-                      宿主视觉 QA + 定稿
+                      宿主视觉 QA + 选图
+                             │
+                             ▼
+                     一次最终精修母图
+                             │
+                             ▼
+                    最终 QC + 精确像素门禁
 ```
 
 标准运行目录为 `auxiliary/`、`planning/`、`candidates/` 和 `final/`。确定性的辅助视角可以
@@ -113,10 +119,7 @@ bundle。项目刻意不使用 Windows 保留设备名 `aux/`。
 2. 可选的材质、灯光、相机或风格参考图；
 3. 一段自然语言渲染要求。
 
-Skill 会在任何 CAD 渲染前先写出一份可编辑的 `planning/render_plan.json`，其中分开维护
-“多视角参考图计划”和“最终生图计划”，并等待用户确认。确认后才生成确定性的 CAD 证据和
-结构化交接文件。效果图合成默认使用 Codex 官方 `$imagegen` Skill，目标为 4K、高质量、高细节；
-如果宿主不能提供精确 4K 控制，则使用最高可用分辨率并记录实际尺寸。
+Skill 会在 CAD 渲染前写出可编辑的 `planning/render_plan.json`；确认后再编译冻结的 `planning/render_contract.json`。候选原生尺寸与最终精确交付像素是两个独立机器字段。效果图合成默认使用 Codex 官方 `$imagegen` Skill；宿主不支持目标原生尺寸时使用最高可用尺寸，后续分辨率门禁会如实记录重采样或放大。
 
 示例请求：
 
@@ -170,12 +173,9 @@ python scripts/run.py prepare `
   --quality high
 ```
 
-未确认计划时命令会拒绝继续。`--width/--height` 控制确定性的 CAD 证据尺寸；最终效果图默认
-通过 Codex 官方 `$imagegen` Skill 请求 4K。可以用 `--host-skill imagegen --target-resolution 4k
---detail-level high` 显式写出默认值。只有最终生图计划中的视角会获得独立的
-`views/<view-id>/` bundle。
+未确认计划时命令会拒绝继续。`--width/--height` 是候选锚点的兼容参数；相机网格和最终锚点有独立尺寸。`--requested-native-size` 控制宿主支持时的真实 size 参数，`--final-width/--final-height` 冻结最终精确像素。只有最终生图视角会获得独立的合同与 bundle。
 
-### 5. 暂存并定稿候选图
+### 5. 暂存、选图、精修并完成交付
 
 宿主官方生图能力返回完整候选图后，先暂存但不要立即选最终图。默认计划的四个候选会分布
 在四个最终视角中；用户指定视角时，候选会全部位于该视角：
@@ -189,7 +189,7 @@ python scripts/run.py stage `
   --candidate C04=.\incoming\C04.png
 ```
 
-暂存结果为 `awaiting_visual_qa`。宿主随后检查联系表和每张原图，写入视觉 QA JSON，再执行：
+暂存结果为 `awaiting_visual_qa`，并写出候选原生尺寸报告。宿主检查联系表和每张原图，写入视觉 QA JSON，再执行候选选择：
 
 ```powershell
 python scripts/run.py finalize `
@@ -197,11 +197,23 @@ python scripts/run.py finalize `
   --visual-qa .\runs\steam-controller\planning\visual_qa.json
 ```
 
-最终运行目录包含 `final/best.png`、`final/selection.json` 和 `final/report.md`。
+选择阶段只写 `final_refine_request.json`，不会生成最终图。按该请求只生成一张 F01 母图，然后：
+
+```powershell
+python scripts/run.py refine-stage `
+  --run .\runs\steam-controller `
+  --master F01=.\incoming\F01.png
+
+python scripts/run.py finish `
+  --run .\runs\steam-controller `
+  --final-qa .\runs\steam-controller\planning\final_qc.host.json
+```
+
+只有 `finish` 会创建 `final/best.*`、`resolution_report.json`、`final_qc.json` 和最终报告。
 
 ## 宿主官方生图边界
 
-Python 包只负责结构化交接；商业效果图默认由 Codex 官方 `$imagegen` Skill 生成。`planning/imagegen_request.json`、`planning/input_roles.json` 和 `planning/final_prompt.txt` 描述包括 4K、高质量、高细节目标在内的交接内容，但不嵌入模型锁定或 API 凭据。
+Python 包只负责结构化交接；`render_contract.json` 是权威源，`imagegen_request.json.tool_parameters` 保存可传给工具的机器字段，Prompt 只承载语义。候选图和最终母图默认由 Codex 官方 `$imagegen` Skill 生成；包内不嵌入模型锁定或 API 凭据。
 
 GPT Image 2 是集成目标和评估参考，不是随仓库打包的依赖。本仓库不会直接调用 OpenAI Images API，从而把凭据、模型可用性和宿主策略留在 Skill 包之外。
 
@@ -244,7 +256,7 @@ ROADMAP.md                      公开的可靠性、评估和 Skill 体验路�
 
 ## 验证
 
-内置 self-test 覆盖环境选择、中断恢复、附件发现、STEP 转换、相机网格、辅助通道、候选暂存、视觉 QA 读取、最终定稿、无颜色 STEP 和模型中立配置合同。完成 bootstrap 后运行：
+内置 self-test 覆盖环境/并发锁、附件发现、STEP 转换、分阶段锚点、冻结合同篡改拒绝、工具参数交接、重试增量、候选原生尺寸、不会提前交付的选图、最终精修、最终 QC、精确像素门禁、无颜色 STEP 和模型中立性。完成 bootstrap 后运行：
 
 ```powershell
 python scripts/run.py self-test --output .\runs\self-test

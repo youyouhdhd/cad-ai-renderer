@@ -139,6 +139,10 @@ python scripts/run.py prepare \
 
 正式 Skill 流程会由宿主模型自动分析视角和参考图，并传入 `--camera-plan`、`--reference-roles`、`--render-brief`，用户无须手写这些文件；但确认后的 `render_plan.json` 始终是视角和候选预算的控制面。
 
+准备完成后，每个最终视角都会生成冻结的 `planning/render_contract.json`，以及结构化的 `geometry_contract.json`、`scene_contract.json` 和 `output_contract.json`。宿主必须从这些文件读取工具参数；候选原生尺寸与 `final_output.width/height` 精确交付尺寸是两个不同概念。
+
+候选 QA 后，`finalize` 只写选图和 `final_refine_request.json`。随后使用官方生图能力只生成一张 F01 母图，执行 `refine-stage`，写最终 QC，再执行 `finish`。只有 `finish` 会创建 `final/best.*` 并写入原生、重采样、放大和精确像素门禁结果。
+
 ## 4. STEP 支持
 
 默认顺序：
@@ -163,7 +167,7 @@ CadQuery 主路径尽量保留装配、零件变换和 STEP 颜色。FreeCAD 兜
 python scripts/run.py self-test --output ./cad-ai-renderer-self-test
 ```
 
-测试会实际创建 STEP、转换为 GLB、渲染辅助图、进行候选几何打分和收尾，但不会调用宿主的官方生图工具。
+测试会实际创建 STEP、转换为 GLB、渲染分阶段辅助图、冻结并篡改验证合同、测试重试增量、候选尺寸报告、最终精修交接、最终 QC 和精确像素门禁，但不会调用宿主的官方生图工具。
 
 ## 7. 常见安装问题
 

@@ -32,23 +32,37 @@ A project YAML is optional and intended for reproducible batch or advanced use. 
 ## `render`
 
 - `aux_backend`: `auto` or `vtk`.
-- `width`, `height`: 256-4096.
+- `width`, `height`: Backward-compatible aliases for candidate anchors.
+- `view_grid_resolution.width`, `.height`: Camera-selection renderer input, 256-4096.
+- `candidate_anchor_resolution.width`, `.height`: Candidate-generation anchors, 256-4096.
+- `final_anchor_resolution.width`, `.height`: Final-refinement anchors, 256-4096; both null selects an aspect-preserving 2048-4096 adaptive size from the final output contract.
 - `background_rgb`: Three values from 0 to 1.
 - `transparent_aux`: Reserved; default false.
 
 ## `generation`
 
-These are host-tool intentions, not model settings:
+These become frozen host-tool parameters after preparation:
 
 - `candidates`: 1-10; default 4.
 - `aspect_ratio`: `auto`, `1:1`, `4:3`, `3:4`, `16:9`, or `9:16`.
 - `quality`: `auto`, `draft`, `standard`, or `high`.
+- `target_resolution`: `auto`, `2k`, or `4k`; used to derive final dimensions when none are explicit.
+- `requested_native_size`: `auto` or exact `WIDTHxHEIGHT`. Exact values must be passed as a tool size argument when supported.
+- `detail_level`: `standard` or `high`.
 - `output_format`: `png`, `jpeg`, or `webp`.
 - `max_retries`: 0 or 1.
+
+## `final_output`
+
+- `width`, `height`: Optional exact output dimensions, 256-8192. Supply both or neither.
+- `format`: `png`, `jpeg`, or `webp`.
+- `resize_policy`: `fit_pad`; preserves the whole image and pads rather than cropping.
+- `allow_upscale`: Allow exact-dimension non-native delivery. Upscaling remains explicitly reported.
 
 ## `qa`
 
 - `min_geometry_score`: Geometry gate from 0 to 100.
+- `min_visual_quality_score`: Final visual-quality gate from 0 to 100.
 - `local_weight`, `visual_weight`: Must sum to 1.
 - `max_edge_distance_px`: Local edge tolerance.
 - `retry_on_geometry_drift`: Allow a single targeted retry.

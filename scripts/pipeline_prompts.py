@@ -210,21 +210,33 @@ def build_generation_prompt(
     target_resolution: str = "4k",
     quality: str = "high",
     detail_level: str = "high",
+    render_contract: Mapping[str, Any] | None = None,
+    retry_delta: Mapping[str, Any] | None = None,
 ) -> str:
     role_lines = [
         f"Image {item['image_index']}: {item['role']}. Allowed: {item.get('allowed_use', '')}. "
         f"Forbidden: {item.get('forbidden_use', '')}."
         for item in input_roles
     ]
+    contract = dict(render_contract or {})
+    geometry_contract = contract.get("geometry_contract", {})
+    structured_constraints = sorted(
+        [dict(item) for item in geometry_contract.get("constraints", []) if isinstance(item, Mapping)],
+        key=lambda item: int(item.get("prompt_priority", 0)),
+        reverse=True,
+    )
+    output_contract = {
+        "generation": contract.get("generation", {}),
+        "final_output": contract.get("final_output", {}),
+    }
     strict_block = ""
     if strict_geometry:
+        exact_failures = list((retry_delta or {}).get("exact_failures", []))
         strict_block = """
 GEOMETRY RECOVERY PASS:
-The earlier candidates drifted. Match the CAD lineart, silhouette mask, camera, proportions, visible
-topology, holes, seams, part boundaries, and occlusion order before improving appearance. Do not move,
-add, remove, widen, narrow, bend, merge, or duplicate a modeled feature. Geometry anchors override all
-style preferences when evidence conflicts.
-"""
+This is a patch against the frozen render contract, not a new free-form generation. Match the CAD
+anchors before improving appearance. Do not alter any frozen field.
+""" + f"\nExact failures to repair: {json.dumps(exact_failures, ensure_ascii=False)}\n"
     core = str(brief.get("generation_prompt_core", "Create a high-end photoreal product rendering."))
     return f"""Create one finished, high-quality product visualization from the supplied images.
 
@@ -241,14 +253,23 @@ Never average geometry across references. Never copy a reference object's shape.
 structural evidence, not the desired illustration style. Normal/depth colors are not final colors.
 Pseudo-colors are part identifiers unless the user explicitly adopts them.
 {strict_block}
+AUTHORITATIVE CONTRACT:
+- Contract ID: {contract.get('contract_id', 'legacy-unfrozen')}
+- Contract revision: {contract.get('contract_revision', 0)}
+- Prompt text is only a projection of planning/render_contract.json. Never reinterpret or override its machine fields.
+
 PROJECT INTENT:
 {project_description or 'Premium, physically plausible product visualization.'}
 
 OUTPUT REQUIREMENTS:
 - Use the official Codex `${host_skill}` Skill or its built-in host tool; do not call a raw image API.
-- Target {target_resolution.upper()} output at {quality} quality and {detail_level} visual detail.
+- Read requested native size, aspect ratio, candidate count, output format, and exact final dimensions from the frozen output contract below.
+- Pass every supported machine field as an actual tool parameter; do not rewrite it from chat context.
 - Preserve the requested camera and CAD evidence before adding material or lighting polish.
-- If the host cannot expose an exact {target_resolution.upper()} output control, use its highest supported resolution and record the actual output dimensions; never claim an unverified upscale is native {target_resolution.upper()}.
+- Record the actual native dimensions. Never claim resampled or upscaled delivery as native resolution.
+
+OUTPUT CONTRACT:
+{json.dumps(output_contract, ensure_ascii=False)}
 
 RENDER DIRECTION:
 {core}
@@ -269,7 +290,7 @@ ENVIRONMENT:
 {json.dumps(brief.get('environment_plan', {}), ensure_ascii=False)}
 
 GEOMETRY CONSTRAINTS:
-{json.dumps(brief.get('geometry_constraints', []), ensure_ascii=False)}
+{json.dumps(structured_constraints or brief.get('geometry_constraints', []), ensure_ascii=False)}
 
 NEGATIVE CONSTRAINTS:
 {json.dumps(brief.get('negative_constraints', []), ensure_ascii=False)}

@@ -8,23 +8,25 @@ Do not implement a hidden HTTP client in this package. Do not ask the user for a
 
 GPT Image 2 is the primary reference target for high-quality product visualization when the host exposes it. It is an integration and evaluation target, not a bundled dependency: this package remains model-neutral and does not call the OpenAI Images API directly.
 
-The default request targets 4K output, high quality, and high visual detail. Built-in host capabilities may not expose exact pixel-size controls; in that case use the highest supported resolution and record the actual dimensions. Never describe an unverified upscale as native 4K.
+The frozen output contract separates requested native generation size from exact final delivery pixels. Built-in host capabilities may not expose exact size controls; use the highest supported size matching the frozen aspect ratio, record actual pixels, and let the later resolution gate perform any allowed exact-dimension resampling. Never describe an upscale as native 4K.
 
 ## Invocation inputs
 
-Read `planning/imagegen_request.json` and `planning/host_handoff.json`. It contains:
+Read `planning/render_contract.json`, `planning/imagegen_request.json`, and `planning/host_handoff.json`. They contain:
 
 - Candidate count.
 - Preferred host Skill (`imagegen`).
-- Aspect-ratio intent.
+- Frozen contract ID and revision.
+- Actual `tool_parameters` for supported host fields.
+- Aspect ratio and requested native-size policy.
 - Quality intent.
-- Target resolution and detail level.
+- Exact final output width and height, separate from native generation.
 - Output format.
 - Prompt path.
 - Ordered input-image paths.
 - Role-manifest path.
 
-Preserve the image order. Include each role in the prompt so the generator knows which images are geometry anchors and which are soft appearance references.
+Preserve the image order. Pass supported machine fields as tool arguments; only scene/material/geometry semantics belong in the prompt. Never rewrite a contract field from the conversation.
 
 ## Output strategy
 
@@ -45,7 +47,9 @@ substitute for separate views.
 
 Save every returned image locally. Pass the returned file paths directly to the `stage` command template in `host_handoff.json`; do not manually copy them into the run first. Do not treat a contact sheet or a four-panel composition as four candidates.
 
-After staging, use the finalization command from `host_handoff.json` without repeating the generator paths. The finalizer reads the stable copies from `candidates/images/` and only needs the host visual-QA file.
+After staging, run candidate finalization without repeating transient paths. It selects a source and writes `final_refine_request.json`; it does not deliver a final image.
+
+Invoke exactly one final-refinement generation using the selected candidate plus high-resolution CAD anchors. Keep camera, crop, composition, geometry, scene, aspect ratio, and final dimensions frozen. Stage F01, perform final QC, then run `finish`. The resolution report records requested/actual native size, requested/delivered final size, megapixels, resampling, upscaling, native-target pass, refinement use, and final-anchor size.
 
 ## Tool unavailable
 
@@ -58,8 +62,8 @@ When the host does not expose an official image-generation capability:
 
 ## Iteration
 
-Use no more than one strict retry. The retry should be targeted to explicit geometry failures and use `max_geometry` anchors. Keep material/style changes secondary.
+Use no more than one strict retry. It must be a validated `retry_delta.json` against the current contract revision, list exact geometry failures, and use `max_geometry` anchors. Frozen fields cannot change.
 
 ## Candidate handoff
 
-Run `stage`, not `finalize`, immediately after generation. Staging imports the files, computes weak local diagnostics, creates the contact sheet and QA prompt, and deliberately leaves the final directory without a selected image. Only run `finalize` after the host has inspected every full-resolution candidate and written visual QA.
+Run `stage`, not `finalize`, immediately after candidate generation. Staging imports files, records native pixels, computes weak local diagnostics, creates the contact sheet and QA prompt, and deliberately leaves the final directory without a selection. Run `finalize` only after full-resolution host QA. Then generate one final master, run `refine-stage`, write final QC, and run `finish`; only `finish` creates `final/best.*`.

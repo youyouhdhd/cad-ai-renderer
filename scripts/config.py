@@ -198,6 +198,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "aux_backend": "auto",
         "width": 1024,
         "height": 1024,
+        "view_grid_resolution": {"width": 768, "height": 768},
+        "candidate_anchor_resolution": {"width": 1024, "height": 1024},
+        "final_anchor_resolution": {"width": None, "height": None},
         "background_rgb": [0.94, 0.94, 0.94],
         "transparent_aux": False,
     },
@@ -207,12 +210,21 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "aspect_ratio": "1:1",
         "quality": "high",
         "target_resolution": "4k",
+        "requested_native_size": "auto",
         "detail_level": "high",
         "output_format": "png",
         "max_retries": 1,
     },
+    "final_output": {
+        "width": None,
+        "height": None,
+        "format": "png",
+        "resize_policy": "fit_pad",
+        "allow_upscale": True,
+    },
     "qa": {
         "min_geometry_score": 75.0,
+        "min_visual_quality_score": 75.0,
         "local_weight": 0.35,
         "visual_weight": 0.65,
         "max_edge_distance_px": 18.0,
@@ -239,6 +251,7 @@ ALLOWED_HOST_SKILLS = {"imagegen", "auto"}
 ALLOWED_TARGET_RESOLUTIONS = {"auto", "2k", "4k"}
 ALLOWED_DETAIL_LEVELS = {"standard", "high"}
 ALLOWED_ASPECT_RATIOS = {"auto", "1:1", "4:3", "3:4", "16:9", "9:16"}
+ALLOWED_RESIZE_POLICIES = {"fit_pad"}
 ALLOWED_REFERENCE_ROLES = {
     "camera",
     "composition",
@@ -400,6 +413,14 @@ def validate_config(cfg: Mapping[str, Any], require_files: bool = True) -> None:
     _require_choice(generation.get("target_resolution", "4k"), ALLOWED_TARGET_RESOLUTIONS, "generation.target_resolution")
     _require_choice(generation.get("detail_level", "high"), ALLOWED_DETAIL_LEVELS, "generation.detail_level")
     _require_choice(generation.get("output_format"), ALLOWED_OUTPUT_FORMATS, "generation.output_format")
+    requested_native_size = str(generation.get("requested_native_size", "auto"))
+    if requested_native_size != "auto":
+        try:
+            native_width, native_height = [int(item) for item in requested_native_size.lower().split("x", 1)]
+        except (TypeError, ValueError):
+            raise ConfigError("generation.requested_native_size must be 'auto' or WIDTHxHEIGHT") from None
+        if min(native_width, native_height) < 256 or max(native_width, native_height) > 8192:
+            raise ConfigError("generation.requested_native_size dimensions must be between 256 and 8192")
     if int(generation.get("max_retries", 1)) not in {0, 1}:
         raise ConfigError("generation.max_retries must be 0 or 1")
 
@@ -439,6 +460,18 @@ def validate_config(cfg: Mapping[str, Any], require_files: bool = True) -> None:
         value = int(render.get(key, 1024))
         if value < 256 or value > 4096:
             raise ConfigError(f"render.{key} must be between 256 and 4096")
+    for key in ("view_grid_resolution", "candidate_anchor_resolution", "final_anchor_resolution"):
+        resolution = render.get(key)
+        if not isinstance(resolution, Mapping):
+            raise ConfigError(f"render.{key} must contain width and height")
+        if key == "final_anchor_resolution" and resolution.get("width") is None and resolution.get("height") is None:
+            continue
+        if bool(resolution.get("width")) != bool(resolution.get("height")):
+            raise ConfigError(f"render.{key}.width and height must be supplied together")
+        for axis in ("width", "height"):
+            value = int(resolution.get(axis, 0))
+            if value < 256 or value > 4096:
+                raise ConfigError(f"render.{key}.{axis} must be between 256 and 4096")
     background_rgb = render.get("background_rgb")
     if (
         not isinstance(background_rgb, (list, tuple))
@@ -457,8 +490,26 @@ def validate_config(cfg: Mapping[str, Any], require_files: bool = True) -> None:
     min_geometry = float(qa.get("min_geometry_score", 75.0))
     if not 0.0 <= min_geometry <= 100.0:
         raise ConfigError("qa.min_geometry_score must be between 0 and 100")
+    min_visual = float(qa.get("min_visual_quality_score", 75.0))
+    if not 0.0 <= min_visual <= 100.0:
+        raise ConfigError("qa.min_visual_quality_score must be between 0 and 100")
     if float(qa.get("max_edge_distance_px", 18.0)) <= 0:
         raise ConfigError("qa.max_edge_distance_px must be greater than 0")
+
+    final_output = cfg["final_output"]
+    width = final_output.get("width")
+    height = final_output.get("height")
+    if bool(width) != bool(height):
+        raise ConfigError("final_output.width and final_output.height must be supplied together")
+    if width is not None:
+        if not 256 <= int(width) <= 8192 or not 256 <= int(height) <= 8192:
+            raise ConfigError("final_output dimensions must be between 256 and 8192")
+    _require_choice(final_output.get("format", "png"), ALLOWED_OUTPUT_FORMATS, "final_output.format")
+    _require_choice(
+        final_output.get("resize_policy", "fit_pad"),
+        ALLOWED_RESIZE_POLICIES,
+        "final_output.resize_policy",
+    )
 
     comfyui = cfg["comfyui"]
     if bool(comfyui.get("enabled")):

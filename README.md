@@ -56,7 +56,7 @@ GPT Image 2 can provide materials, lighting, reflections, environment, and prese
 - Converts STEP/STP or supported meshes into renderable geometry while preserving leaf-part structure where the converter supports it.
 - Creates deterministic CAD evidence: camera grids, color previews, clay, lineart, silhouette masks, camera-space normals, depth, and part-ID maps.
 - Produces structured planning artifacts for the host image-generation capability.
-- Stages multiple candidates, computes local geometry diagnostics, accepts host visual QA, and finalizes one candidate.
+- Freezes geometry/scene/output fields into a hash-validated render contract, records native pixels, selects one source through host QA, generates one final-refinement master, and enforces exact delivery dimensions with native/resampled/upscaled reporting.
 - Supports one targeted geometry-recovery retry and an optional ComfyUI depth/canny guard.
 
 ## What it does not do
@@ -83,13 +83,19 @@ discover ──► preflight/bootstrap ──► camera grid
                           deterministic auxiliary passes
                                       │
                                       ▼
-                         host image-generation handoff
+                         frozen render contract + handoff
                                       │
                                       ▼
                     candidate staging + local diagnostics
                                       │
                                       ▼
-                           host visual QA + finalize
+                           host visual QA + selection
+                                      │
+                                      ▼
+                         one final-refinement master
+                                      │
+                                      ▼
+                      final QC + exact-pixel resolution gate
 ```
 
 The canonical run layout is `auxiliary/`, `planning/`, `candidates/`, and `final/`. The auxiliary
@@ -114,12 +120,7 @@ This repository is designed to be installed and invoked as the reusable `$cad-ai
 2. optional material, lighting, camera, or style references; and
 3. a natural-language rendering brief.
 
-The Skill prepares deterministic CAD evidence and a structured handoff. Before any CAD rendering, it
-writes one editable `planning/render_plan.json` containing both the broad reference-view plan and the
-final generation plan. Preparation pauses until the user confirms that file. Beauty-image synthesis
-defaults to the official Codex `$imagegen` Skill with a 4K, high-quality, high-detail target; if the
-host cannot expose exact 4K controls, it must use the highest supported resolution and report the
-actual dimensions.
+The Skill prepares deterministic CAD evidence and a structured handoff. Before CAD rendering it writes one editable `planning/render_plan.json`; after confirmation it compiles a frozen `planning/render_contract.json`. Candidate native size and exact final delivery pixels are separate machine fields. Beauty synthesis defaults to the official Codex `$imagegen` Skill; unsupported native sizes fall back to the highest host size, while the later resolution gate records exact-dimension resampling or upscaling truthfully.
 
 Example request:
 
@@ -174,12 +175,9 @@ python scripts/run.py prepare `
   --quality high
 ```
 
-The command refuses to run without a confirmed plan. `--width/--height` control deterministic CAD
-evidence; final images target 4K through the official Codex `$imagegen` Skill by default. Use
-`--host-skill imagegen --target-resolution 4k --detail-level high` to make those defaults explicit.
-Only the final-generation views from the plan receive independent `views/<view-id>/` bundles.
+The command refuses to run without a confirmed plan. `--width/--height` are backward-compatible candidate-anchor controls; dedicated view-grid and final-anchor dimensions are available separately. `--requested-native-size` controls the host size parameter when supported, while `--final-width/--final-height` freeze exact delivery pixels. Only final-generation views receive independent `views/<view-id>/` contracts and bundles.
 
-### 5. Stage and finalize candidates
+### 5. Stage, select, refine, and finish
 
 After the host image-generation capability returns complete candidate images, stage them without selecting a final image:
 
@@ -192,9 +190,7 @@ python scripts/run.py stage `
   --candidate C04=.\incoming\C04.png
 ```
 
-The default plan produces four total candidate IDs across its final views; an explicit user view keeps
-all candidates in that one view. The stage result is `awaiting_visual_qa`. The host then reviews the
-contact sheet and each candidate at full resolution, writes a visual-QA JSON file, and finalizes:
+The stage result is `awaiting_visual_qa` and includes `candidate_resolution_report.json`. The host reviews every candidate, writes visual QA, and selects a source:
 
 ```powershell
 python scripts/run.py finalize `
@@ -202,11 +198,23 @@ python scripts/run.py finalize `
   --visual-qa .\runs\steam-controller\planning\visual_qa.json
 ```
 
-The final run contains `final/best.png`, `final/selection.json`, and `final/report.md`.
+Selection writes `final_refine_request.json` but no final image. Generate exactly one F01 master from that request, then:
+
+```powershell
+python scripts/run.py refine-stage `
+  --run .\runs\steam-controller `
+  --master F01=.\incoming\F01.png
+
+python scripts/run.py finish `
+  --run .\runs\steam-controller `
+  --final-qa .\runs\steam-controller\planning\final_qc.host.json
+```
+
+Only `finish` creates `final/best.*`, together with `resolution_report.json`, `final_qc.json`, and the final report.
 
 ## Host image-generation boundary
 
-The Python package stops at a structured handoff. The official Codex `$imagegen` Skill is responsible for beauty-image synthesis by default. `planning/imagegen_request.json`, `planning/input_roles.json`, and `planning/final_prompt.txt` describe the handoff, including the 4K/high-detail target, without embedding a model lock or API credential.
+The Python package stops at structured handoffs. `render_contract.json` is authoritative; `imagegen_request.json.tool_parameters` carries supported machine fields, while the prompt carries semantics. The official Codex `$imagegen` Skill handles candidate and final-master synthesis. The package embeds no model lock or API credential.
 
 GPT Image 2 is an integration target and evaluation reference, not a bundled dependency. The repository does not directly invoke the OpenAI Images API; this keeps credentials, model availability, and host policy outside the Skill package.
 
@@ -249,7 +257,7 @@ The example makes the intended boundary visible: the CAD model and auxiliary map
 
 ## Validation
 
-The bundled self-test covers environment selection, interruption recovery, attachment discovery, STEP conversion, camera-grid generation, auxiliary rendering, candidate staging, visual-QA ingestion, finalization, colorless STEP handling, and the model-neutral configuration contract. Run it through the launcher after bootstrapping:
+The bundled self-test covers environment/concurrent-lock safety, attachment discovery, STEP conversion, stage-aware anchors, frozen-contract tamper rejection, tool-parameter handoff, retry deltas, candidate native-size reporting, source selection without premature delivery, final refinement, final QC, exact-pixel resolution gating, colorless STEP handling, and model neutrality. Run it through the launcher after bootstrapping:
 
 ```powershell
 python scripts/run.py self-test --output .\runs\self-test

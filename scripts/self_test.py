@@ -17,14 +17,16 @@ from typing import Any
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
-from cad_render import create_render_plan, prepare_run
+from cad_render import _render_resolution, create_render_plan, prepare_run
 from config import ConfigError, build_direct_config, product_view_specs, validate_config
+from final_refinement import finish_final_master, stage_final_master
 from finalize_candidates import finalize
 from geometry_metrics import score_candidate
 from input_discovery import discover_inputs
 from preflight import run_preflight
 from run import BOOTSTRAP_MARKER, _lock_is_stale, _managed_environment_action, _select_best_interpreter
 from runtime_layout import AUXILIARY_DIRNAME, resolve_auxiliary_dir
+from render_contract import load_and_validate_render_contract, validate_retry_delta
 from step_to_glb import convert_model
 
 
@@ -236,6 +238,9 @@ def run_self_test(output_dir: str | Path) -> dict[str, Any]:
             encoding="utf-8",
         )
         foreign_lock_stale = _lock_is_stale(migrated_lock)
+        ownerless_lock = root / "fresh-ownerless.bootstrap.lock"
+        ownerless_lock.mkdir(parents=True, exist_ok=True)
+        fresh_ownerless_lock_preserved = not _lock_is_stale(ownerless_lock)
         bootstrap_ok = bool(
             selected
             and selected["version"][:2] == (3, 12)
@@ -243,6 +248,7 @@ def run_self_test(output_dir: str | Path) -> dict[str, Any]:
             and explicit_selected["source"] == "explicit"
             and resume_action == "resume"
             and foreign_lock_stale
+            and fresh_ownerless_lock_preserved
         )
         report["checks"].append(
             {
@@ -252,6 +258,7 @@ def run_self_test(output_dir: str | Path) -> dict[str, Any]:
                 "explicit_override_selected": explicit_selected,
                 "partial_environment_action": resume_action,
                 "foreign_host_lock_treated_as_stale": foreign_lock_stale,
+                "fresh_ownerless_lock_preserved": fresh_ownerless_lock_preserved,
             }
         )
         if not bootstrap_ok:
@@ -277,11 +284,49 @@ def run_self_test(output_dir: str | Path) -> dict[str, Any]:
             env=help_env,
         )
         help_text = help_process.stdout + help_process.stderr
+        refine_help_process = subprocess.run(
+            [
+                sys.executable,
+                str(skill_root / "scripts" / "run.py"),
+                "--venv-dir",
+                str(managed_path),
+                "--no-install",
+                "refine-stage",
+                "--help",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=180,
+            env=help_env,
+        )
+        finish_help_process = subprocess.run(
+            [
+                sys.executable,
+                str(skill_root / "scripts" / "run.py"),
+                "--venv-dir",
+                str(managed_path),
+                "--no-install",
+                "finish",
+                "--help",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=180,
+            env=help_env,
+        )
+        refine_help = refine_help_process.stdout + refine_help_process.stderr
+        finish_help = finish_help_process.stdout + finish_help_process.stderr
         help_ok = (
             help_process.returncode == 0
             and "--visual-qa" in help_text
             and "--stage-only" in help_text
             and "--candidate" in help_text
+            and refine_help_process.returncode == 0
+            and "--master" in refine_help
+            and finish_help_process.returncode == 0
+            and "--final-qa" in finish_help
         )
         report["checks"].append(
             {
@@ -289,6 +334,8 @@ def run_self_test(output_dir: str | Path) -> dict[str, Any]:
                 "ok": help_ok,
                 "returncode": help_process.returncode,
                 "help_excerpt": help_text[-2000:],
+                "refine_help_excerpt": refine_help[-1000:],
+                "finish_help_excerpt": finish_help[-1000:],
             }
         )
         if not help_ok:
@@ -328,6 +375,7 @@ def run_self_test(output_dir: str | Path) -> dict[str, Any]:
             overrides={"render": {"width": 256, "height": 256}},
         )
         plan_probe_path = plan_probe_output / "planning" / "render_plan.json"
+        adaptive_final_anchor = _render_resolution(plan_probe_config, "final_anchor_resolution")
         plan_probe = create_render_plan(plan_probe_config, discovery, plan_path=plan_probe_path)
         plan_payload = plan_probe["plan"]
         priority_plan = create_render_plan(
@@ -348,6 +396,10 @@ def run_self_test(output_dir: str | Path) -> dict[str, Any]:
             and plan_payload["generation_plan"]["view_ids"]
             == ["front", "back", "left", "front_right_axonometric_upper"]
             and plan_payload["generation_plan"]["total_candidate_count"] == 4
+            and plan_payload["generation_plan"]["requested_native_size"] == "auto"
+            and plan_payload["final_output"]["width"] > 0
+            and plan_payload["final_output"]["height"] > 0
+            and adaptive_final_anchor == (4096, 4096)
             and priority_plan["reference_plan"]["view_ids"][0] == "back"
             and priority_plan["generation_plan"]["view_ids"] == ["back"]
             and priority_plan["generation_plan"]["total_candidate_count"] == 4
@@ -360,6 +412,7 @@ def run_self_test(output_dir: str | Path) -> dict[str, Any]:
                 "reference_view_count": len(plan_payload["reference_plan"]["view_ids"]),
                 "final_view_ids": plan_payload["generation_plan"]["view_ids"],
                 "final_candidate_count": plan_payload["generation_plan"]["total_candidate_count"],
+                "adaptive_final_anchor": adaptive_final_anchor,
             }
         )
         if not plan_ok:
@@ -372,7 +425,13 @@ def run_self_test(output_dir: str | Path) -> dict[str, Any]:
             description="Premium studio render with brushed metal and dark polymer.",
             references=discovery["references"],
             overrides={
-                "render": {"width": 384, "height": 384},
+                "render": {
+                    "width": 384,
+                    "height": 384,
+                    "view_grid_resolution": {"width": 384, "height": 384},
+                    "candidate_anchor_resolution": {"width": 384, "height": 384},
+                    "final_anchor_resolution": {"width": 512, "height": 512},
+                },
                 "camera": {
                     "view_set": "grid",
                     "view_grid_azimuths": [0, 90],
@@ -397,7 +456,13 @@ def run_self_test(output_dir: str | Path) -> dict[str, Any]:
             description="Directional product-view coverage.",
             references=discovery["references"],
             overrides={
-                "render": {"width": 256, "height": 256},
+                "render": {
+                    "width": 256,
+                    "height": 256,
+                    "view_grid_resolution": {"width": 256, "height": 256},
+                    "candidate_anchor_resolution": {"width": 256, "height": 256},
+                    "final_anchor_resolution": {"width": 512, "height": 512},
+                },
                 "camera": {
                     "view_set": "all",
                 },
@@ -430,6 +495,8 @@ def run_self_test(output_dir: str | Path) -> dict[str, Any]:
                 (
                     (multi_output / "views" / str(view_id) / AUXILIARY_DIRNAME / "color_preview.png").exists()
                     and (multi_output / "views" / str(view_id) / "planning" / "imagegen_request.json").exists()
+                    and (multi_output / "views" / str(view_id) / "planning" / "render_contract.json").exists()
+                    and (multi_output / "views" / str(view_id) / "final_refinement" / "auxiliary" / "lineart.png").exists()
                 )
                 for view_id in multi_view_ids
             )
@@ -453,7 +520,13 @@ def run_self_test(output_dir: str | Path) -> dict[str, Any]:
             description="Premium studio render with brushed metal and dark polymer.",
             references=discovery["references"],
             overrides={
-                "render": {"width": 384, "height": 384},
+                "render": {
+                    "width": 384,
+                    "height": 384,
+                    "view_grid_resolution": {"width": 384, "height": 384},
+                    "candidate_anchor_resolution": {"width": 384, "height": 384},
+                    "final_anchor_resolution": {"width": 512, "height": 512},
+                },
                 "camera": {
                     "view_set": "grid",
                     "view_grid_azimuths": [0, 90],
@@ -461,6 +534,7 @@ def run_self_test(output_dir: str | Path) -> dict[str, Any]:
                 },
                 "geometry": {"converter": "cadquery", "anchor_mode": "balanced"},
                 "generation": {"candidates": 4, "aspect_ratio": "1:1", "quality": "high"},
+                "final_output": {"width": 768, "height": 768, "format": "png", "resize_policy": "fit_pad"},
             },
         )
         plan_path = _confirmed_render_plan(
@@ -481,22 +555,51 @@ def run_self_test(output_dir: str | Path) -> dict[str, Any]:
             pipeline_output / AUXILIARY_DIRNAME / "depth.png",
             pipeline_output / AUXILIARY_DIRNAME / "part_id.png",
             pipeline_output / "planning" / "input_roles.json",
+            pipeline_output / "planning" / "geometry_contract.json",
+            pipeline_output / "planning" / "scene_contract.json",
+            pipeline_output / "planning" / "output_contract.json",
+            pipeline_output / "planning" / "render_contract.json",
+            pipeline_output / "planning" / "retry_delta.template.json",
             pipeline_output / "planning" / "final_prompt.txt",
             pipeline_output / "planning" / "imagegen_request.json",
             pipeline_output / "planning" / "host_handoff.json",
             pipeline_output / "planning" / "NEXT_STEPS.md",
             pipeline_output / "planning" / "visual_qa.template.json",
+            pipeline_output / "final_refinement" / "auxiliary" / "color_preview.png",
+            pipeline_output / "final_refinement" / "auxiliary" / "clay.png",
+            pipeline_output / "final_refinement" / "auxiliary" / "lineart.png",
         ]
         pipeline_view_grid = json.loads(
             (pipeline_output / AUXILIARY_DIRNAME / "view_grid.json").read_text(encoding="utf-8")
         )
+        grid_thumbnail_size = tuple(pipeline_view_grid[0]["camera"]["image_size"])
+        with Image.open(pipeline_output / AUXILIARY_DIRNAME / "color_preview.png") as image:
+            candidate_anchor_size = image.size
+        with Image.open(pipeline_output / "final_refinement" / "auxiliary" / "color_preview.png") as image:
+            final_anchor_size = image.size
+        frozen_contract, frozen_consistency = load_and_validate_render_contract(pipeline_output)
         prepare_ok = (
             manifest["status"] == "prepared_for_image_generation"
             and all(path.exists() for path in required_files)
             and pipeline_view_grid[0]["view_id"] == "V02"
+            and grid_thumbnail_size[0] <= 384
+            and candidate_anchor_size == (384, 384)
+            and final_anchor_size == (512, 512)
+            and frozen_consistency["contract_consistency_pass"]
+            and frozen_contract["final_output"]["width"] == 768
+            and frozen_contract["final_output"]["height"] == 768
         )
         report["checks"].append(
-            {"name": "direct_input_step_to_auxiliary_pipeline", "ok": prepare_ok, "files": [str(path) for path in required_files]}
+            {
+                "name": "contract_frozen_stage_aware_anchor_pipeline",
+                "ok": prepare_ok,
+                "files": [str(path) for path in required_files],
+                "view_grid_resolution_contract": frozen_contract["anchor_policy"]["view_grid_resolution"],
+                "grid_thumbnail_size": grid_thumbnail_size,
+                "candidate_anchor_size": candidate_anchor_size,
+                "final_anchor_size": final_anchor_size,
+                "contract_id": frozen_contract.get("contract_id"),
+            }
         )
         if not prepare_ok:
             raise RuntimeError("Local preparation pipeline failed")
@@ -531,14 +634,20 @@ def run_self_test(output_dir: str | Path) -> dict[str, Any]:
             request.get("raw_api_required") is False
             and request.get("host_skill") == "imagegen"
             and request.get("target_resolution") == "4k"
+            and request.get("requested_native_size") == "auto"
             and request.get("detail_level") == "high"
             and request.get("candidate_count") == 4
             and request.get("candidate_ids") == ["C01", "C02", "C03", "C04"]
             and len(request.get("input_images", [])) >= 4
+            and request.get("render_contract_path") == str(pipeline_output / "planning" / "render_contract.json")
+            and request.get("exact_final_output", {}).get("width") == 768
+            and request.get("exact_final_output", {}).get("height") == 768
+            and request.get("tool_parameters", {}).get("candidate_count") == 4
             and manifest.get("raw_image_api_used") is False
             and handoff.get("stage") == "host_image_generation"
             and handoff.get("image_generation", {}).get("host_skill") == "imagegen"
             and handoff.get("image_generation", {}).get("target_resolution") == "4k"
+            and handoff.get("image_generation", {}).get("render_contract") == str(pipeline_output / "planning" / "render_contract.json")
             and handoff.get("image_generation", {}).get("quality") == "high"
             and "stage" in handoff.get("candidate_staging", {}).get("command_argv_template", [])
             and "finalize" in finalize_argv
@@ -547,6 +656,67 @@ def run_self_test(output_dir: str | Path) -> dict[str, Any]:
         report["checks"].append({"name": "official_image_skill_delegation_contract", "ok": delegation_ok, "request": request})
         if not delegation_ok:
             raise RuntimeError("Image-generation delegation contract is invalid")
+
+        invalid_retry_rejected = False
+        try:
+            validate_retry_delta(
+                frozen_contract,
+                {
+                    "retry_from_contract_revision": frozen_contract["contract_revision"],
+                    "exact_failures": ["hole-A missing"],
+                    "anchor_mode": "max_geometry",
+                    "camera": {"azimuth": 90},
+                },
+            )
+        except ValueError:
+            invalid_retry_rejected = True
+        retry_delta_path = root / "retry_delta.json"
+        retry_delta_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "1.0",
+                    "retry_from_contract_revision": frozen_contract["contract_revision"],
+                    "exact_failures": ["restore the two modeled circular holes"],
+                    "anchor_mode": "max_geometry",
+                    "appearance_delta": {},
+                    "lighting_delta": {},
+                    "notes": "Synthetic contract-scoped retry.",
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        retry_manifest = prepare_run(
+            config,
+            discovery,
+            strict_geometry=True,
+            retry_delta_path=retry_delta_path,
+            render_plan_path=plan_path,
+        )
+        retry_contract, retry_consistency = load_and_validate_render_contract(pipeline_output)
+        retry_request = json.loads(
+            (pipeline_output / "planning" / "imagegen_request.json").read_text(encoding="utf-8")
+        )
+        retry_ok = (
+            invalid_retry_rejected
+            and retry_manifest["status"] == "prepared_for_image_generation"
+            and retry_contract["contract_id"] == frozen_contract["contract_id"]
+            and retry_contract["contract_revision"] == frozen_contract["contract_revision"] + 1
+            and retry_contract["retry_delta"]["exact_failures"] == ["restore the two modeled circular holes"]
+            and retry_contract["anchor_policy"]["candidate_anchor_mode"] == "max_geometry"
+            and retry_request["candidate_ids"] == ["R01", "R02", "R03", "R04"]
+            and retry_consistency["contract_consistency_pass"]
+        )
+        report["checks"].append(
+            {
+                "name": "retry_delta_preserves_frozen_contract_and_revises_once",
+                "ok": retry_ok,
+                "contract_id": retry_contract.get("contract_id"),
+                "contract_revision": retry_contract.get("contract_revision"),
+            }
+        )
+        if not retry_ok:
+            raise RuntimeError("Contract-scoped retry validation failed")
 
         candidates = _make_candidates(pipeline_output / AUXILIARY_DIRNAME / "color_preview.png", root / "mock_candidates")
         local_scores = []
@@ -567,7 +737,7 @@ def run_self_test(output_dir: str | Path) -> dict[str, Any]:
         if not metric_ok:
             raise RuntimeError("Local geometry metrics did not rank the exact candidate first")
 
-        candidate_specs = [f"C{index:02d}={path}" for index, path in enumerate(candidates, start=1)]
+        candidate_specs = [f"R{index:02d}={path}" for index, path in enumerate(candidates, start=1)]
         staged = finalize(pipeline_output, candidate_specs, stage_only=True)
         staged_best_files = list((pipeline_output / "final").glob("best.*"))
         stage_ok = (
@@ -576,6 +746,7 @@ def run_self_test(output_dir: str | Path) -> dict[str, Any]:
             and not staged_best_files
             and not (pipeline_output / "final" / "selection.json").exists()
             and (pipeline_output / "candidates" / "contact_sheet.png").exists()
+            and (pipeline_output / "candidates" / "candidate_resolution_report.json").exists()
             and (pipeline_output / "planning" / "qa_prompt.txt").exists()
         )
         report["checks"].append(
@@ -591,12 +762,12 @@ def run_self_test(output_dir: str | Path) -> dict[str, Any]:
         visual_qa_path = root / "visual_qa.json"
         visual_qa = {
             "candidates": [
-                {"candidate_id": "C01", "geometry_score": 98, "overall_score": 94},
-                {"candidate_id": "C02", "geometry_score": 65, "overall_score": 70},
-                {"candidate_id": "C03", "geometry_score": 45, "overall_score": 58},
-                {"candidate_id": "C04", "geometry_score": 30, "overall_score": 42},
+                {"candidate_id": "R01", "geometry_score": 98, "overall_score": 94},
+                {"candidate_id": "R02", "geometry_score": 65, "overall_score": 70},
+                {"candidate_id": "R03", "geometry_score": 45, "overall_score": 58},
+                {"candidate_id": "R04", "geometry_score": 30, "overall_score": 42},
             ],
-            "best_candidate_id": "C01",
+            "best_candidate_id": "R01",
             "retry_recommended": False,
             "decision_summary": "Synthetic visual QA for the self-test.",
         }
@@ -613,16 +784,18 @@ def run_self_test(output_dir: str | Path) -> dict[str, Any]:
         )
         second_report = report_path.read_text(encoding="utf-8")
         finalize_ok = (
-            finalization["status"] == "complete"
-            and finalization["best"]["candidate_id"] == "C01"
-            and repeated["best"]["candidate_id"] == "C01"
+            finalization["status"] == "awaiting_final_refinement"
+            and finalization["best"]["candidate_id"] == "R01"
+            and repeated["best"]["candidate_id"] == "R01"
             and all(Path(record["path"]).parent == pipeline_output / "candidates" / "images" for record in finalization["records"])
             and (pipeline_output / "candidates" / "contact_sheet.png").exists()
-            and (pipeline_output / "final" / "best.png").exists()
+            and not (pipeline_output / "final" / "best.png").exists()
+            and (pipeline_output / "final" / "selection.json").exists()
+            and (pipeline_output / "planning" / "final_refine_request.json").exists()
         )
-        report["checks"].append({"name": "candidate_visual_qa_and_finalization", "ok": finalize_ok})
+        report["checks"].append({"name": "candidate_visual_qa_selects_without_premature_delivery", "ok": finalize_ok})
         if not finalize_ok:
-            raise RuntimeError("Candidate finalization failed")
+            raise RuntimeError("Candidate selection/final-refinement handoff failed")
 
         report_idempotent = first_report == second_report and second_report.count("## Candidate QA") == 1
         report["checks"].append(
@@ -634,6 +807,76 @@ def run_self_test(output_dir: str | Path) -> dict[str, Any]:
         )
         if not report_idempotent:
             raise RuntimeError("Final report accumulated duplicate or inconsistent sections")
+
+        refinement_stage = stage_final_master(pipeline_output, f"F01={candidates[0]}")
+        final_qc_path = root / "final_qc.host.json"
+        final_qc_path.write_text(
+            json.dumps(
+                {
+                    "candidate_id": "F01",
+                    "approve_delivery": True,
+                    "geometry_score": 98,
+                    "visual_quality_score": 95,
+                    "visual_quality_pass": True,
+                    "contract_consistency_pass": True,
+                    "geometry_failures": [],
+                    "issues": [],
+                    "strengths": ["Synthetic exact-geometry master"],
+                    "decision_summary": "Synthetic final QC for the self-test.",
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        finished = finish_final_master(pipeline_output, final_qc_path)
+        final_report_text = (pipeline_output / "final" / "report.md").read_text(encoding="utf-8")
+        finished_again = finish_final_master(pipeline_output, final_qc_path)
+        final_report_again = (pipeline_output / "final" / "report.md").read_text(encoding="utf-8")
+        with Image.open(pipeline_output / "final" / "best.png") as image:
+            delivered_size = image.size
+        resolution_payload = json.loads(
+            (pipeline_output / "final" / "resolution_report.json").read_text(encoding="utf-8")
+        )
+        final_refinement_ok = (
+            refinement_stage["status"] == "awaiting_final_qc"
+            and finished["status"] == "complete_exact_dimensions_upscaled"
+            and finished_again["status"] == "complete_exact_dimensions_upscaled"
+            and delivered_size == (768, 768)
+            and resolution_payload["delivered_final_size"] == {"width": 768, "height": 768}
+            and resolution_payload["upscaled"] is True
+            and resolution_payload["target_met_natively"] is False
+            and (pipeline_output / "final" / "final_qc.json").exists()
+            and final_report_text == final_report_again
+        )
+        report["checks"].append(
+            {
+                "name": "final_refinement_resolution_gate_and_exact_delivery",
+                "ok": final_refinement_ok,
+                "status": finished.get("status"),
+                "delivered_size": delivered_size,
+                "resolution_report": resolution_payload,
+            }
+        )
+        if not final_refinement_ok:
+            raise RuntimeError("Final refinement or exact-resolution delivery gate failed")
+
+        render_brief_path = pipeline_output / "planning" / "render_brief.json"
+        original_brief = render_brief_path.read_text(encoding="utf-8")
+        render_brief_path.write_text(original_brief + "\n", encoding="utf-8")
+        tamper_rejected = False
+        try:
+            load_and_validate_render_contract(pipeline_output)
+        except ValueError:
+            tamper_rejected = True
+        finally:
+            render_brief_path.write_text(original_brief, encoding="utf-8")
+        restored_contract_ok = load_and_validate_render_contract(pipeline_output)[1]["contract_consistency_pass"]
+        contract_guard_ok = tamper_rejected and restored_contract_ok
+        report["checks"].append(
+            {"name": "frozen_contract_tamper_rejected_and_restore_verified", "ok": contract_guard_ok}
+        )
+        if not contract_guard_ok:
+            raise RuntimeError("Frozen contract tamper detection failed")
 
         colorless_glb = root / "colorless" / "model.glb"
         colorless_manifest = convert_model(
@@ -688,7 +931,7 @@ def run_self_test(output_dir: str | Path) -> dict[str, Any]:
         "",
         f"Status: **{report['status'].upper()}**",
         "",
-        "The test verifies portable interpreter selection, resumable environment initialization, command-specific launcher help, real STEP creation, attachment discovery without YAML, the two-stage camera workflow, every deterministic auxiliary pass, host image-generation delegation, four-candidate staging without a premature final, visual-QA-only finalization, idempotent reporting, colorless STEP detection, and the absence of model locks or a raw image API client. The host image-generation tool itself is not callable from this local Python test.",
+        "The test verifies portable interpreter selection, concurrent-lock safety, attachment discovery, real STEP conversion, stage-aware CAD anchors, frozen render/output/geometry contracts, host tool-parameter delegation, contract-scoped retry deltas, candidate native-size reporting, candidate selection without premature delivery, one final-refinement master, final QC, exact-pixel resolution gating, tamper rejection, idempotent reporting, colorless STEP detection, and the absence of model locks or a raw image API client. The host image-generation tool itself is not callable from this local Python test.",
         "",
         "## Checks",
         "",

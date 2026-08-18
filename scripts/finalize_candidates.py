@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Stage, score, compare, and finalize image-generation candidates locally.
+"""Stage, score, and select image-generation candidates locally.
 
 The first pass deliberately stops at ``awaiting_visual_qa``. Local edge and
 silhouette metrics are diagnostics, not an aesthetic or topology authority.
-A final image is written only after host visual QA, an explicit ``--best-id``,
-or an explicit ``--allow-local-selection`` override.
+Candidate selection writes a frozen final-refinement request. It never copies a
+candidate directly to ``final/best.*``; final delivery is owned by the separate
+refine-stage and finish commands.
 """
 
 from __future__ import annotations
@@ -19,10 +20,13 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import yaml
+from PIL import Image
 
 from geometry_metrics import score_candidate
+from host_handoff import write_final_refinement_handoff
 from image_utils import make_contact_sheet
 from pipeline_prompts import qa_prompt
+from render_contract import build_final_refine_request, load_and_validate_render_contract
 from runtime_layout import manifest_paths, output_layout, resolve_auxiliary_dir
 
 ID_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,31}$")
@@ -95,6 +99,40 @@ def _discover_staged_candidates(image_dir: Path) -> list[tuple[str, Path]]:
                 raise ValueError(f"Multiple staged files use candidate ID {candidate_id!r}")
             by_id[candidate_id] = path.resolve()
     return sorted(by_id.items(), key=lambda item: item[0].lower())
+
+
+def _candidate_resolution_report(
+    stored: Sequence[tuple[str, Path]],
+    contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    requested_native = str(contract.get("generation", {}).get("requested_native_size", "auto"))
+    records: list[dict[str, Any]] = []
+    for candidate_id, path in stored:
+        with Image.open(path) as image:
+            width, height = image.size
+        native_match = requested_native != "auto" and requested_native.lower() == f"{width}x{height}"
+        records.append(
+            {
+                "candidate_id": candidate_id,
+                "path": str(path),
+                "actual_native_size": {"width": width, "height": height},
+                "source_megapixels": round(width * height / 1_000_000, 4),
+                "requested_native_size": requested_native,
+                "requested_native_size_met": native_match if requested_native != "auto" else None,
+            }
+        )
+    return {
+        "schema_version": "1.0",
+        "stage": "candidate_generation",
+        "contract_id": contract.get("contract_id"),
+        "contract_revision": contract.get("contract_revision"),
+        "requested_native_size": requested_native,
+        "requested_final_size": {
+            "width": int(contract["final_output"]["width"]),
+            "height": int(contract["final_output"]["height"]),
+        },
+        "candidates": records,
+    }
 
 
 def _load_project_settings(run_dir: Path) -> dict[str, Any]:
@@ -171,9 +209,10 @@ def _clear_final_selection(final_dir: Path) -> None:
     for path in final_dir.glob("best.*"):
         if path.is_file():
             path.unlink()
-    selection = final_dir / "selection.json"
-    if selection.exists():
-        selection.unlink()
+    for name in ("selection.json", "resolution_report.json", "final_qc.json"):
+        path = final_dir / name
+        if path.exists():
+            path.unlink()
 
 
 def _visual_template(candidate_ids: Sequence[str], local_records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -275,9 +314,11 @@ def _report_text(
         lines.extend(
             [
                 f"- Best candidate: `{best.get('candidate_id')}`",
-                f"- Final image: `{best.get('final_path')}`",
+                f"- Selected source: `{best.get('path')}`",
                 f"- Geometry gate passed: `{best.get('geometry_gate_passed')}`",
                 f"- Selection reason: {best.get('selection_reason', '')}",
+                f"- Final-refinement request: `{root / 'planning' / 'final_refine_request.json'}`",
+                "- Final image: pending one frozen final-refinement generation and final QC.",
                 "",
             ]
         )
@@ -303,6 +344,7 @@ def _report_text(
             f"- Auxiliary passes: `{auxiliary_dir}`",
             f"- Candidate contact sheet: `{root / 'candidates' / 'contact_sheet.png'}`",
             f"- Candidate scores: `{root / 'candidates' / 'scores.json'}`",
+            f"- Candidate resolution report: `{root / 'candidates' / 'candidate_resolution_report.json'}`",
             f"- Visual QA prompt: `{root / 'planning' / 'qa_prompt.txt'}`",
             f"- Final directory: `{root / 'final'}`",
             "",
@@ -335,6 +377,7 @@ def finalize(
     allow_local_selection: bool = False,
 ) -> dict[str, Any]:
     root = Path(run_dir).expanduser().resolve()
+    contract, contract_consistency = load_and_validate_render_contract(root)
     auxiliary_dir = resolve_auxiliary_dir(root, create=False, allow_legacy=True)
     lineart = auxiliary_dir / "lineart.png"
     mask = auxiliary_dir / "mask.png"
@@ -372,6 +415,13 @@ def finalize(
             "No candidates were supplied and no staged candidates were found. "
             "Run the stage command with --candidate first."
         )
+    expected_ids = [str(item) for item in contract.get("generation", {}).get("candidate_ids", [])]
+    supplied_ids = [candidate_id for candidate_id, _ in parsed]
+    if expected_ids and supplied_ids != expected_ids:
+        raise ValueError(
+            "Candidate IDs/order do not match the frozen render contract: "
+            f"expected {expected_ids}, got {supplied_ids}"
+        )
     stored: list[tuple[str, Path]] = []
     for candidate_id, source in parsed:
         suffix = source.suffix.lower() or ".png"
@@ -379,6 +429,10 @@ def finalize(
         if source.resolve() != destination.resolve():
             shutil.copy2(source, destination)
         stored.append((candidate_id, destination))
+    _write_json(
+        candidates_dir / "candidate_resolution_report.json",
+        _candidate_resolution_report(stored, contract),
+    )
 
     local_records: list[dict[str, Any]] = []
     for candidate_id, path in stored:
@@ -457,20 +511,26 @@ def finalize(
         status = "awaiting_visual_qa"
         _clear_final_selection(final_dir)
     else:
+        _clear_final_selection(final_dir)
         best = _choose_best(records, threshold, preferred_id, best_id)
-        best_source = Path(str(best["path"]))
-        best_output = final_dir / f"best{best_source.suffix.lower()}"
-        shutil.copy2(best_source, best_output)
-        best["final_path"] = str(best_output)
         best["visual_qa_used"] = visual_qa is not None
+        best["contract_id"] = contract.get("contract_id")
+        best["contract_revision"] = contract.get("contract_revision")
+        best["contract_consistency_pass"] = contract_consistency["contract_consistency_pass"]
         _write_json(final_dir / "selection.json", best)
+        refine_request = build_final_refine_request(root, contract, best)
+        write_final_refinement_handoff(
+            root,
+            launcher=Path(__file__).resolve().parent / "run.py",
+            refine_request=refine_request,
+        )
         if visual_qa is None:
-            status = "complete_with_local_only_warning"
-            warnings.append("Final selection used local diagnostics only because --allow-local-selection was explicit.")
+            status = "awaiting_final_refinement_with_local_only_warning"
+            warnings.append("Candidate selection used local diagnostics only because --allow-local-selection was explicit.")
         elif bool(best["geometry_gate_passed"]):
-            status = "complete"
+            status = "awaiting_final_refinement"
         else:
-            status = "complete_with_geometry_warning"
+            status = "awaiting_final_refinement_with_geometry_warning"
 
     report_path = final_dir / "report.md"
     report_path.write_text(
@@ -483,17 +543,17 @@ def finalize(
     manifest.update(
         {
             "status": status,
-            "stage": "candidate_visual_qa" if best is None else "complete",
+            "stage": "candidate_visual_qa" if best is None else "final_refinement",
             "candidate_count": len(records),
             "visual_qa_used": visual_qa is not None,
             "best": best,
             "paths": manifest_paths(layout),
-            "finished_at": _now() if best is not None else manifest.get("finished_at"),
+            "finished_at": manifest.get("finished_at"),
         }
     )
     _upsert_manifest_step(
         manifest,
-        "candidate_staging" if best is None else "candidate_finalization",
+        "candidate_staging" if best is None else "candidate_selection",
         "awaiting_host_visual_qa" if best is None else status,
     )
     _write_json(manifest_path, manifest)
@@ -506,11 +566,18 @@ def finalize(
         "qa_prompt": str(planning_dir / "qa_prompt.txt"),
         "visual_qa_template": str(planning_dir / "visual_qa.template.json"),
         "report": str(report_path),
+        "candidate_resolution_report": str(candidates_dir / "candidate_resolution_report.json"),
     }
     if best is None:
         result["next_action"] = (
             "Inspect every candidate and the contact sheet at full resolution, write host visual QA using the template, "
             "then run finalize with --visual-qa."
+        )
+    else:
+        result["final_refine_request"] = str(planning_dir / "final_refine_request.json")
+        result["next_action"] = (
+            "Invoke the official image-generation capability exactly once with final_refine_request.json, "
+            "then run refine-stage, host final QC, and finish."
         )
     return result
 

@@ -48,7 +48,7 @@ Return the preparation bundle and prompt. Do not request an API key or silently 
 
 ## No candidate passes geometry QA
 
-Review the contact sheet at full resolution. Improve the camera selection, tighten reference roles, name exact errors, and use the one strict retry. Do not lower the threshold merely to report success.
+Review the contact sheet at full resolution. Name exact errors and apply one `retry_delta.json` against the current contract revision with `anchor_mode=max_geometry`. Do not change camera, geometry contract, anchor resolutions, reference roles, aspect ratio, candidate count, or final dimensions, and do not lower the threshold merely to report success.
 
 ## The ambient `python` is 3.9 or otherwise incompatible
 
@@ -64,8 +64,16 @@ Re-run the same command. The owned environment records `installing`/`ready` stat
 
 ## Local diagnostics selected a different image than visual QA
 
-This is expected evidence that local scores are only heuristics. Run `stage` first; it must not create a final image. Then write host visual QA and run `finalize`. Never use local-only selection unless `--allow-local-selection` is explicitly required and the warning is acceptable.
+This is expected evidence that local scores are only heuristics. Run `stage` first; it must not create a selection or final image. Then write host visual QA and run `finalize`, which selects a source and writes a final-refinement request. Only `finish` after final QC may create `final/best.*`. Never use local-only selection unless explicitly required and warning-marked.
 
 ## The report contains repeated candidate sections
 
-Current finalization rebuilds `final/report.md` rather than appending. Re-run stage/finalize with the updated Skill. Do not hand-edit the report; it is generated from manifests, the rendering brief, candidate scores, and visual QA.
+Candidate selection and final finish rebuild reports rather than appending. Re-run the structured stage instead of hand-editing reports; they are generated from the frozen contract, candidate scores/QA, final QC, and resolution report.
+
+## Exact pixels exist but native 4K is false
+
+Read `final/resolution_report.json`. `delivered_final_size` proves the exact file dimensions; `actual_native_size`, `resampled`, `upscaled`, and `target_met_natively` describe how they were achieved. `complete_exact_dimensions_upscaled` is a successful exact-size delivery, not a native-4K claim.
+
+## Frozen contract mismatch
+
+Do not edit `camera_plan.json`, `render_brief.json`, `input_roles.json`, or component contracts after freezing. Start a new render plan for frozen-field changes. Use a revisioned retry delta only for explicit geometry failures and allowed appearance/lighting changes.
