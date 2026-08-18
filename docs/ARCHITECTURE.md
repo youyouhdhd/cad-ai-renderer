@@ -62,7 +62,11 @@ The run directory is the persistence boundary. A normal run is portable when its
 1. **Attachment-first inputs.** Conversation attachments are the normal interface; YAML is an optional advanced configuration, not a prerequisite.
 2. **Dedicated environment.** The launcher can select a compatible 64-bit CPython 3.10–3.13, create an isolated environment, resume interrupted setup, and verify imports before dispatch.
 3. **Evidence before generation.** CAD software produces structural evidence first. The host image-generation capability receives that evidence and the natural-language brief.
-4. **Directional coverage with explicit overrides.** A deterministic grid is generated first. With no requested viewpoint, six principal and eight axonometric bundles are prepared; an explicit camera plan or view ID still produces one bundle.
+4. **Separate reference coverage from final generation.** A single editable, user-confirmed render plan
+   is written before CAD rendering. Without a requested viewpoint, deterministic reference evidence
+   covers six principal and eight axonometric directions, while final generation is limited to four
+   candidates total (front, back, left, and one upper axonometric). An explicit user view is placed
+   first in the reference plan and receives all final candidates; an explicit quantity applies there.
 5. **Stage before finalize.** Candidates are copied into stable run-owned locations and locally ranked before visual QA. Staging alone never writes the final image.
 6. **One targeted retry.** Geometry recovery is bounded. A failed guard must not become an unlimited generation loop.
 7. **Reference target without a model lock.** GPT Image 2 is the primary reference target for product-image evaluation when available, while the host handoff remains model-neutral and the package never embeds an image API client or credential.
@@ -154,7 +158,7 @@ The run directory is the persistence boundary. A normal run is portable when its
 1. **附件优先。** 对话附件是正常接口；YAML 只是可选高级配置，不是使用前提。
 2. **隔离环境。** 启动器可选择兼容的 64 位 CPython 3.10–3.13，创建隔离环境，恢复中断安装，并在分发命令前验证依赖。
 3. **先证据后生成。** 传统 CAD 工具先提供结构证据，宿主官方生图能力再结合证据和自然语言要求生成图片。
-4. **方向覆盖与显式覆盖。** 先生成确定性视角网格；未指定视角时准备六个主视图和八个轴测 bundle，显式相机规划或视角 ID 仍只生成一个 bundle。
+4. **参考覆盖与最终生成分离。** 在 CAD 渲染前先写出一份用户确认的可编辑计划；未指定视角时，确定性参考证据覆盖六个主视图和八个轴测方向，但最终只生成四张候选（前、后、左、一个上方轴测）。用户指定视角时，该视角排在参考计划首位并承载全部最终候选；指定数量也只作用于该视角。
 5. **先暂存后定稿。** 候选图先复制到运行目录并做本地诊断；暂存阶段永远不写最终图。
 6. **最多一次定向重试。** 几何恢复是有上限的，失败后不能变成无限生图循环。
 7. **有参考目标但不锁定模型。** 在宿主提供时，GPT Image 2 是产品效果图评估的主要参考目标；宿主交接仍保持模型中立，包内不嵌入生图 API 客户端或凭据。

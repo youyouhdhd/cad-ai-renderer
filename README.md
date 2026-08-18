@@ -92,7 +92,10 @@ discover ──► preflight/bootstrap ──► camera grid
                            host visual QA + finalize
 ```
 
-The canonical single-view run layout is `auxiliary/`, `planning/`, `candidates/`, and `final/`. When no output viewpoint is specified, the default layout additionally contains independent `views/<view-id>/` bundles for front, back, left, right, top, bottom, and upper/lower axonometric directions. The reserved Windows device name `aux/` is intentionally not used.
+The canonical run layout is `auxiliary/`, `planning/`, `candidates/`, and `final/`. The auxiliary
+view grid may cover fourteen deterministic directions for geometry evidence, while
+`views/<view-id>/` contains only the final-generation view bundles listed in the confirmed plan.
+The reserved Windows device name `aux/` is intentionally not used.
 
 ## Supported inputs
 
@@ -111,11 +114,16 @@ This repository is designed to be installed and invoked as the reusable `$cad-ai
 2. optional material, lighting, camera, or style references; and
 3. a natural-language rendering brief.
 
-The Skill prepares deterministic CAD evidence and a structured handoff. When no output viewpoint is specified, it prepares the full default directional view set. Beauty-image synthesis defaults to the official Codex `$imagegen` Skill with a 4K, high-quality, high-detail target; if the host cannot expose exact 4K controls, it must use the highest supported resolution and report the actual dimensions.
+The Skill prepares deterministic CAD evidence and a structured handoff. Before any CAD rendering, it
+writes one editable `planning/render_plan.json` containing both the broad reference-view plan and the
+final generation plan. Preparation pauses until the user confirms that file. Beauty-image synthesis
+defaults to the official Codex `$imagegen` Skill with a 4K, high-quality, high-detail target; if the
+host cannot expose exact 4K controls, it must use the highest supported resolution and report the
+actual dimensions.
 
 Example request:
 
-> Use `$cad-ai-renderer` with this STEP file. With no specified viewpoint, prepare front/back/left/right/top/bottom and upper/lower axonometric outputs. Use the official Codex `$imagegen` Skill to create four 4K, high-detail candidates per view, compare them against the CAD evidence, and select each view after visual QA.
+> Use `$cad-ai-renderer` with this STEP file. First show me the editable reference and final-generation plan. With no specified viewpoint, keep broad CAD reference coverage but generate exactly four final candidates total: front, back, left, and one upper axonometric. Wait for my confirmation before preparing the evidence.
 
 ## Quick start
 
@@ -138,24 +146,40 @@ python scripts/run.py discover `
   --output .\runs\steam-controller\input_discovery.json
 ```
 
-### 3. Create the geometry preparation bundle
+### 3. Create and review the render plan
+
+```powershell
+python scripts/run.py plan `
+  --input .\examples\steam-controller-2026\model\SC_solid_stp_20260429.stp `
+  --output .\runs\steam-controller `
+  --intent "Create a premium studio product image. Preserve the CAD silhouette, proportions, visible topology, seams, holes, and part placement."
+```
+
+Review `planning/render_plan.json`. If the user specified a view, keep it first in
+`reference_plan.view_ids` and as the final-generation view; if the user specified a quantity, edit
+that view's `candidate_count` and `candidate_ids`. Otherwise the generated plan contains broad
+reference coverage and exactly four final candidates total. Set `confirmation.confirmed` to `true`
+after review.
+
+### 4. Prepare the confirmed geometry bundle
 
 ```powershell
 python scripts/run.py prepare `
   --input .\examples\steam-controller-2026\model\SC_solid_stp_20260429.stp `
   --output .\runs\steam-controller `
   --intent "Create a premium studio product image. Preserve the CAD silhouette, proportions, visible topology, seams, holes, and part placement." `
+  --plan .\runs\steam-controller\planning\render_plan.json `
   --width 1024 `
   --height 1024 `
-  --candidates 4 `
   --quality high
 ```
 
-The `--width/--height` values control deterministic CAD evidence. Final images target 4K through the official Codex `$imagegen` Skill by default. Use `--host-skill imagegen --target-resolution 4k --detail-level high` to make the defaults explicit. If no output viewpoint is specified, inspect each generated view bundle under `views/<view-id>/` and stage/finalize each view independently.
+The command refuses to run without a confirmed plan. `--width/--height` control deterministic CAD
+evidence; final images target 4K through the official Codex `$imagegen` Skill by default. Use
+`--host-skill imagegen --target-resolution 4k --detail-level high` to make those defaults explicit.
+Only the final-generation views from the plan receive independent `views/<view-id>/` bundles.
 
-For a first pass, stop after the camera grid with `--grid-only`. The host should inspect `planning/camera_selection_prompt.txt`; if no reference fixes a single camera, preserve the full default view set instead of selecting only one hero angle.
-
-### 4. Stage and finalize candidates
+### 5. Stage and finalize candidates
 
 After the host image-generation capability returns complete candidate images, stage them without selecting a final image:
 
@@ -168,7 +192,9 @@ python scripts/run.py stage `
   --candidate C04=.\incoming\C04.png
 ```
 
-The stage result is `awaiting_visual_qa`. The host then reviews the contact sheet and each candidate at full resolution, writes a visual-QA JSON file, and finalizes:
+The default plan produces four total candidate IDs across its final views; an explicit user view keeps
+all candidates in that one view. The stage result is `awaiting_visual_qa`. The host then reviews the
+contact sheet and each candidate at full resolution, writes a visual-QA JSON file, and finalizes:
 
 ```powershell
 python scripts/run.py finalize `

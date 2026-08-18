@@ -27,13 +27,25 @@ python scripts/run.py preflight `
   --input .\examples\steam-controller-2026\model\SC_solid_stp_20260429.stp `
   --output-dir .\runs\steam-controller
 
-python scripts/run.py prepare `
+python scripts/run.py plan `
   --input .\examples\steam-controller-2026\model\SC_solid_stp_20260429.stp `
   --output .\runs\steam-controller `
   --intent "Preserve the CAD silhouette, proportions, visible topology, seams, holes, and part placement in a neutral studio product image."
 ```
 
-The committed images are reference artifacts. Re-running the host image-generation stage can produce different candidates.
+Review `planning/render_plan.json`, then set `confirmation.confirmed` to `true` and run:
+
+```powershell
+python scripts/run.py prepare `
+  --input .\examples\steam-controller-2026\model\SC_solid_stp_20260429.stp `
+  --output .\runs\steam-controller `
+  --intent "Preserve the CAD silhouette, proportions, visible topology, seams, holes, and part placement in a neutral studio product image." `
+  --plan .\runs\steam-controller\planning\render_plan.json
+```
+
+The default plan keeps broad deterministic reference coverage but schedules exactly four final
+candidates total. The committed images are reference artifacts; re-running the host image-generation
+stage can produce different candidates.
 
 ## 中文
 
@@ -45,4 +57,4 @@ The committed images are reference artifacts. Re-running the host image-generati
 
 ### 重新生成准备包
 
-在仓库根目录运行上方 PowerShell 命令即可重新执行预检和几何准备。已提交图片仅作为参考工件，重新运行宿主生图阶段可能得到不同候选图。
+在仓库根目录运行上方 PowerShell 命令，确认 `render_plan.json` 后即可重新执行几何准备。已提交图片仅作为参考工件，重新运行宿主生图阶段可能得到不同候选图。
