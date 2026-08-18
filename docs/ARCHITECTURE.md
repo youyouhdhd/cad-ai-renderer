@@ -13,7 +13,7 @@ This document is for maintainers who need to understand the boundaries between C
 | `input_discovery.py` | Classify model and image inputs; infer default roles | Deciding the final visual style |
 | `run.py` | Find a compatible interpreter, create/reuse the managed environment, dispatch subcommands | Installing into the global interpreter |
 | `step_to_glb.py`, `freecad_step_export.py` | Convert CAD inputs into a renderable intermediate | Claiming generated-image geometry is mathematically exact |
-| `render_aux_vtk.py` and `cad_render.py` | Create camera grids and deterministic auxiliary maps | Producing the final beauty image |
+| `render_aux_vtk.py` and `cad_render.py` | Create named directional view grids, per-view bundles, and deterministic auxiliary maps | Producing the final beauty image |
 | `pipeline_prompts.py`, `host_handoff.py` | Serialize planning and host handoff artifacts | Calling a raw remote image API |
 | `finalize_candidates.py` | Stage candidates, calculate local diagnostics, ingest visual QA, finalize | Replacing visual QA with a local score |
 | Optional ComfyUI client | Add one geometry guard before a strict retry | Becoming the default render backend or retry loop |
@@ -35,9 +35,10 @@ model + references + intent
             ├──────────────► model manifest and geometry metrics
             │
             ▼
-   camera grid and view plan
+   camera grid and directional view plan
             │
             ▼
+       per-view CAD bundles
   color / clay / lineart / mask
   normal / depth / part-ID maps
             │
@@ -61,10 +62,11 @@ The run directory is the persistence boundary. A normal run is portable when its
 1. **Attachment-first inputs.** Conversation attachments are the normal interface; YAML is an optional advanced configuration, not a prerequisite.
 2. **Dedicated environment.** The launcher can select a compatible 64-bit CPython 3.10–3.13, create an isolated environment, resume interrupted setup, and verify imports before dispatch.
 3. **Evidence before generation.** CAD software produces structural evidence first. The host image-generation capability receives that evidence and the natural-language brief.
-4. **Two-stage camera selection.** A deterministic grid is generated before a final camera is accepted, reducing accidental camera drift.
+4. **Directional coverage with explicit overrides.** A deterministic grid is generated first. With no requested viewpoint, six principal and eight axonometric bundles are prepared; an explicit camera plan or view ID still produces one bundle.
 5. **Stage before finalize.** Candidates are copied into stable run-owned locations and locally ranked before visual QA. Staging alone never writes the final image.
 6. **One targeted retry.** Geometry recovery is bounded. A failed guard must not become an unlimited generation loop.
 7. **Reference target without a model lock.** GPT Image 2 is the primary reference target for product-image evaluation when available, while the host handoff remains model-neutral and the package never embeds an image API client or credential.
+8. **Codex image-generation default.** The handoff prefers the official `$imagegen` Skill and requests 4K, high quality, and high detail. When exact host resolution controls are unavailable, the actual dimensions are recorded rather than overstated.
 
 ### Failure modes
 
@@ -103,7 +105,7 @@ The run directory is the persistence boundary. A normal run is portable when its
 | `input_discovery.py` | 分类模型/图片输入并推断默认角色 | 决定最终视觉风格 |
 | `run.py` | 查找兼容解释器、创建/复用隔离环境、分发子命令 | 向全局解释器安装依赖 |
 | `step_to_glb.py`、`freecad_step_export.py` | 把 CAD 输入转换为可渲染中间格式 | 声称生成图像具备数学级精确几何 |
-| `render_aux_vtk.py`、`cad_render.py` | 生成相机网格和确定性辅助图 | 生成最终商业效果图 |
+| `render_aux_vtk.py`、`cad_render.py` | 生成命名方向视角网格、逐视角 bundle 和确定性辅助图 | 生成最终商业效果图 |
 | `pipeline_prompts.py`、`host_handoff.py` | 序列化规划与宿主交接文件 | 调用原始远程生图 API |
 | `finalize_candidates.py` | 暂存候选、计算本地诊断、读取视觉 QA、定稿 | 用本地分数替代视觉 QA |
 | 可选 ComfyUI 客户端 | 在一次严格重试前提供几何守卫 | 变成默认渲染后端或无限重试循环 |
@@ -125,9 +127,10 @@ The run directory is the persistence boundary. A normal run is portable when its
           ├────────────► 模型清单与几何指标
           │
           ▼
-       相机网格
+       相机网格和方向视角规划
           │
           ▼
+      逐视角 CAD bundle
 颜色 / 黏土 / 线稿 / 遮罩
 法线 / 深度 / 部件 ID 图
           │
@@ -151,10 +154,11 @@ The run directory is the persistence boundary. A normal run is portable when its
 1. **附件优先。** 对话附件是正常接口；YAML 只是可选高级配置，不是使用前提。
 2. **隔离环境。** 启动器可选择兼容的 64 位 CPython 3.10–3.13，创建隔离环境，恢复中断安装，并在分发命令前验证依赖。
 3. **先证据后生成。** 传统 CAD 工具先提供结构证据，宿主官方生图能力再结合证据和自然语言要求生成图片。
-4. **两阶段相机。** 先生成确定性视角网格，再接受最终相机，减少视角漂移。
+4. **方向覆盖与显式覆盖。** 先生成确定性视角网格；未指定视角时准备六个主视图和八个轴测 bundle，显式相机规划或视角 ID 仍只生成一个 bundle。
 5. **先暂存后定稿。** 候选图先复制到运行目录并做本地诊断；暂存阶段永远不写最终图。
 6. **最多一次定向重试。** 几何恢复是有上限的，失败后不能变成无限生图循环。
 7. **有参考目标但不锁定模型。** 在宿主提供时，GPT Image 2 是产品效果图评估的主要参考目标；宿主交接仍保持模型中立，包内不嵌入生图 API 客户端或凭据。
+8. **默认 Codex 生图。** 交接默认优先使用官方 `$imagegen` Skill，并请求 4K、高质量、高细节；宿主无法精确控制分辨率时记录实际尺寸，不夸大输出能力。
 
 ### 失败模式
 
