@@ -92,7 +92,7 @@ GPT Image 2 可以负责材质、灯光、反射、环境和展示质量；CAD �
                       宿主视觉 QA + 定稿
 ```
 
-标准运行目录为 `auxiliary/`、`planning/`、`candidates/` 和 `final/`。项目刻意不使用 Windows 保留设备名 `aux/`。
+单视角运行的标准目录为 `auxiliary/`、`planning/`、`candidates/` 和 `final/`。未指定输出视角时，还会生成独立的 `views/<view-id>/` bundle，覆盖前后左右上下以及上下方向的轴测视角。项目刻意不使用 Windows 保留设备名 `aux/`。
 
 ## 支持的输入
 
@@ -111,11 +111,11 @@ GPT Image 2 可以负责材质、灯光、反射、环境和展示质量；CAD �
 2. 可选的材质、灯光、相机或风格参考图；
 3. 一段自然语言渲染要求。
 
-Skill 会准备确定性的 CAD 证据和结构化交接文件。当宿主提供 GPT Image 2 时，它是效果图合成的主要参考目标；否则仍由宿主支持的官方生图能力承担交接边界。
+Skill 会准备确定性的 CAD 证据和结构化交接文件。未指定输出视角时，默认准备完整的多方向视角集合。效果图合成默认使用 Codex 官方 `$imagegen` Skill，目标为 4K、高质量、高细节；如果宿主不能提供精确 4K 控制，则使用最高可用分辨率并记录实际尺寸。
 
 示例请求：
 
-> 使用 `$cad-ai-renderer` 处理这个 STEP 文件。保留原始轮廓、比例、孔洞、接缝、可见拓扑和部件位置。使用 GPT Image 2 生成四张高级工作室产品效果图候选，结合 CAD 证据进行比较，并在视觉 QA 后选出最优结果。
+> 使用 `$cad-ai-renderer` 处理这个 STEP 文件。未指定视角时生成前后左右上下以及上下轴测视角。使用 Codex 官方 `$imagegen` Skill 为每个视角生成四张 4K、高细节候选图，结合 CAD 证据比较，并在视觉 QA 后分别定稿。
 
 ## 快速开始
 
@@ -151,7 +151,9 @@ python scripts/run.py prepare `
   --quality high
 ```
 
-首次运行可以加 `--grid-only`，在相机网格处暂停。宿主应检查 `planning/camera_selection_prompt.txt`，选定视角，并按 `references/PIPELINE.md` 写入相机规划 JSON。
+`--width/--height` 控制确定性的 CAD 证据尺寸；最终效果图默认通过 Codex 官方 `$imagegen` Skill 请求 4K。可以用 `--host-skill imagegen --target-resolution 4k --detail-level high` 显式写出默认值。未指定视角时，应分别检查 `views/<view-id>/` 下的视角 bundle，并分别暂存、视觉 QA 和定稿。
+
+首次运行可以加 `--grid-only`，在相机网格处暂停。如果没有参考图锁定单一相机，宿主应保留完整默认视角集合，而不是只选择一张主视角。
 
 ### 4. 暂存并定稿候选图
 
@@ -178,7 +180,7 @@ python scripts/run.py finalize `
 
 ## 宿主官方生图边界
 
-Python 包只负责结构化交接；商业效果图由宿主环境的官方生图 Skill 或工具生成。`planning/imagegen_request.json`、`planning/input_roles.json` 和 `planning/final_prompt.txt` 描述交接内容，但不嵌入模型锁定或 API 凭据。
+Python 包只负责结构化交接；商业效果图默认由 Codex 官方 `$imagegen` Skill 生成。`planning/imagegen_request.json`、`planning/input_roles.json` 和 `planning/final_prompt.txt` 描述包括 4K、高质量、高细节目标在内的交接内容，但不嵌入模型锁定或 API 凭据。
 
 GPT Image 2 是集成目标和评估参考，不是随仓库打包的依赖。本仓库不会直接调用 OpenAI Images API，从而把凭据、模型可用性和宿主策略留在 Skill 包之外。
 

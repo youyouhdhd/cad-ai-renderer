@@ -9,7 +9,7 @@ description: Generate geometry-anchored industrial product renders from an attac
 
 Treat the current host conversation model as the planner and visual judge. Keep runtime execution model-neutral: do not add model IDs, model locks, routing restrictions, or reasoning-mode requirements to the Skill contract. Public documentation may name GPT Image 2 as a reference target, but execution must continue to use the host's currently supported official image-generation capability.
 
-Use the host's official image-generation skill or tool for final images. Prefer the official `imagegen` skill when it is exposed. Otherwise use the host's official image-generation tool. Do not call a raw image API from bundled Python, do not request an API key, and do not substitute a third-party generator silently.
+Use the host's official image-generation skill or tool for final images. Prefer the official Codex `$imagegen` Skill when it is exposed; otherwise use the host's official image-generation tool. The default handoff requests 4K output at high quality and high detail. If the host cannot expose exact 4K controls, use its highest supported resolution and record actual dimensions instead of claiming native 4K. Do not call a raw image API from bundled Python, do not request an API key, and do not substitute a third-party generator silently.
 
 Use CAD, FreeCAD, Blender, VTK, or ComfyUI only to create deterministic geometry evidence. Do not treat a traditional renderer as the default beauty renderer.
 

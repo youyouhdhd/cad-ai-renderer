@@ -202,6 +202,10 @@ def build_generation_prompt(
     input_roles: Sequence[Mapping[str, Any]],
     project_description: str,
     strict_geometry: bool = False,
+    host_skill: str = "imagegen",
+    target_resolution: str = "4k",
+    quality: str = "high",
+    detail_level: str = "high",
 ) -> str:
     role_lines = [
         f"Image {item['image_index']}: {item['role']}. Allowed: {item.get('allowed_use', '')}. "
@@ -235,6 +239,12 @@ Pseudo-colors are part identifiers unless the user explicitly adopts them.
 {strict_block}
 PROJECT INTENT:
 {project_description or 'Premium, physically plausible product visualization.'}
+
+OUTPUT REQUIREMENTS:
+- Use the official Codex `${host_skill}` Skill or its built-in host tool; do not call a raw image API.
+- Target {target_resolution.upper()} output at {quality} quality and {detail_level} visual detail.
+- Preserve the requested camera and CAD evidence before adding material or lighting polish.
+- If the host cannot expose an exact {target_resolution.upper()} output control, use its highest supported resolution and record the actual output dimensions; never claim an unverified upscale is native {target_resolution.upper()}.
 
 RENDER DIRECTION:
 {core}

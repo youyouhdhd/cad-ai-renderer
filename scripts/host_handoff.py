@@ -138,6 +138,11 @@ def write_generation_handoff(
         "status": "prepared_for_image_generation",
         "run_dir": str(root),
         "image_generation": {
+            "host_skill": imagegen_request.get("host_skill", "imagegen"),
+            "target_resolution": imagegen_request.get("target_resolution", "4k"),
+            "quality": imagegen_request.get("quality", "high"),
+            "detail_level": imagegen_request.get("detail_level", "high"),
+            "resolution_policy": imagegen_request.get("resolution_policy", "Use the highest supported host resolution and record actual dimensions."),
             "request": str(planning / "imagegen_request.json"),
             "prompt": str(planning / "final_prompt.txt"),
             "input_roles": str(planning / "input_roles.json"),
@@ -157,6 +162,8 @@ def write_generation_handoff(
             "report": str(root / "final" / "report.md"),
         },
         "notes": [
+            "Use the official Codex imagegen Skill by default; do not call a raw image API.",
+            "Request 4K at high quality and high detail when the host exposes those controls; record actual dimensions when it does not.",
             "Pass the image generator's returned file paths directly to the stage command; do not pre-copy them.",
             "The stage command stores stable candidate copies and never selects a final image. Inspect all candidates at full resolution and write host visual QA before finalization.",
             "Finalization reuses the staged copies; do not repeat image-generator paths unless intentionally replacing a candidate.",
@@ -187,6 +194,10 @@ def write_multi_generation_handoff(
     launcher: str | Path,
     view_bundles: Sequence[Mapping[str, Any]],
     candidate_count: int,
+    host_skill: str = "imagegen",
+    target_resolution: str = "4k",
+    quality: str = "high",
+    detail_level: str = "high",
 ) -> dict[str, Any]:
     """Write one aggregate handoff for independent multi-view generation bundles."""
     root = Path(run_dir).expanduser().resolve()
@@ -247,8 +258,15 @@ def write_multi_generation_handoff(
         "run_dir": str(root),
         "view_count": len(views),
         "candidate_count_per_view": int(candidate_count),
+        "host_skill": host_skill,
+        "target_resolution": target_resolution,
+        "quality": quality,
+        "detail_level": detail_level,
+        "resolution_policy": "Request 4K for every view; record actual dimensions when the host cannot expose exact 4K control.",
         "views": views,
         "notes": [
+            "Use the official Codex imagegen Skill by default; do not call a raw image API.",
+            "Request 4K at high quality and high detail for every view when supported.",
             "Generate each view independently; never average, collage, or morph different camera directions into one candidate.",
             "Each view has its own ordered CAD anchors, candidates, visual-QA file, and final/best.png output.",
             "Stage and finalize each view with its own command templates after the host has inspected every full-resolution candidate.",

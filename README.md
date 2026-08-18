@@ -92,7 +92,7 @@ discover ──► preflight/bootstrap ──► camera grid
                            host visual QA + finalize
 ```
 
-The canonical run layout is `auxiliary/`, `planning/`, `candidates/`, and `final/`. The reserved Windows device name `aux/` is intentionally not used.
+The canonical single-view run layout is `auxiliary/`, `planning/`, `candidates/`, and `final/`. When no output viewpoint is specified, the default layout additionally contains independent `views/<view-id>/` bundles for front, back, left, right, top, bottom, and upper/lower axonometric directions. The reserved Windows device name `aux/` is intentionally not used.
 
 ## Supported inputs
 
@@ -111,11 +111,11 @@ This repository is designed to be installed and invoked as the reusable `$cad-ai
 2. optional material, lighting, camera, or style references; and
 3. a natural-language rendering brief.
 
-The Skill prepares deterministic CAD evidence and a structured handoff. When the host exposes GPT Image 2, it is the primary reference target for beauty-image synthesis; otherwise the host-supported official image capability remains the boundary.
+The Skill prepares deterministic CAD evidence and a structured handoff. When no output viewpoint is specified, it prepares the full default directional view set. Beauty-image synthesis defaults to the official Codex `$imagegen` Skill with a 4K, high-quality, high-detail target; if the host cannot expose exact 4K controls, it must use the highest supported resolution and report the actual dimensions.
 
 Example request:
 
-> Use `$cad-ai-renderer` with this STEP file. Preserve the original silhouette, proportions, holes, seams, visible topology, and part placement. Create four premium studio product-render candidates with GPT Image 2, compare them against the CAD evidence, and select the strongest result after visual QA.
+> Use `$cad-ai-renderer` with this STEP file. With no specified viewpoint, prepare front/back/left/right/top/bottom and upper/lower axonometric outputs. Use the official Codex `$imagegen` Skill to create four 4K, high-detail candidates per view, compare them against the CAD evidence, and select each view after visual QA.
 
 ## Quick start
 
@@ -151,7 +151,9 @@ python scripts/run.py prepare `
   --quality high
 ```
 
-For a first pass, stop after the camera grid with `--grid-only`. The host should inspect `planning/camera_selection_prompt.txt`, select a view, and write the camera plan described in `references/PIPELINE.md`.
+The `--width/--height` values control deterministic CAD evidence. Final images target 4K through the official Codex `$imagegen` Skill by default. Use `--host-skill imagegen --target-resolution 4k --detail-level high` to make the defaults explicit. If no output viewpoint is specified, inspect each generated view bundle under `views/<view-id>/` and stage/finalize each view independently.
+
+For a first pass, stop after the camera grid with `--grid-only`. The host should inspect `planning/camera_selection_prompt.txt`; if no reference fixes a single camera, preserve the full default view set instead of selecting only one hero angle.
 
 ### 4. Stage and finalize candidates
 
@@ -178,7 +180,7 @@ The final run contains `final/best.png`, `final/selection.json`, and `final/repo
 
 ## Host image-generation boundary
 
-The Python package stops at a structured handoff. The host's official image-generation skill or tool is responsible for beauty-image synthesis. `planning/imagegen_request.json`, `planning/input_roles.json`, and `planning/final_prompt.txt` describe the handoff without embedding a model lock or API credential.
+The Python package stops at a structured handoff. The official Codex `$imagegen` Skill is responsible for beauty-image synthesis by default. `planning/imagegen_request.json`, `planning/input_roles.json`, and `planning/final_prompt.txt` describe the handoff, including the 4K/high-detail target, without embedding a model lock or API credential.
 
 GPT Image 2 is an integration target and evaluation reference, not a bundled dependency. The repository does not directly invoke the OpenAI Images API; this keeps credentials, model availability, and host policy outside the Skill package.
 

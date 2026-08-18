@@ -516,6 +516,10 @@ def _prepare_view_bundle(
         input_roles,
         config["project"].get("description", ""),
         strict_geometry=strict_geometry,
+        host_skill=str(config["generation"].get("host_skill", "imagegen")),
+        target_resolution=str(config["generation"].get("target_resolution", "4k")),
+        quality=str(config["generation"].get("quality", "high")),
+        detail_level=str(config["generation"].get("detail_level", "high")),
     )
     (planning_dir / "final_prompt.txt").write_text(generation_prompt, encoding="utf-8")
     candidate_count = int(config["generation"]["candidates"])
@@ -523,6 +527,9 @@ def _prepare_view_bundle(
     imagegen_request = {
         "backend": "official_host_image_generation_skill_or_tool",
         "raw_api_required": False,
+        "host_skill": str(config["generation"].get("host_skill", "imagegen")),
+        "target_resolution": str(config["generation"].get("target_resolution", "4k")),
+        "detail_level": str(config["generation"].get("detail_level", "high")),
         "view_id": camera_plan.get("selected_view_id"),
         "view_label": camera_plan.get("view_label"),
         "view_type": camera_plan.get("view_type"),
@@ -535,6 +542,7 @@ def _prepare_view_bundle(
         "input_images": [str(path) for path in generation_inputs],
         "input_roles_path": str(planning_dir / "input_roles.json"),
         "instruction": "Invoke the host's official image-generation capability. Prefer one multi-output invocation; otherwise make separate invocations with the same ordered inputs and prompt.",
+        "resolution_policy": "Request the target resolution when the host exposes it; otherwise use the highest supported resolution and record actual dimensions.",
     }
     _write_json(planning_dir / "imagegen_request.json", imagegen_request)
     write_generation_handoff(
@@ -621,6 +629,12 @@ def _load_or_build_config(args: argparse.Namespace) -> tuple[dict[str, Any], dic
         cfg["generation"]["aspect_ratio"] = args.aspect_ratio
     if args.quality:
         cfg["generation"]["quality"] = args.quality
+    if args.host_skill:
+        cfg["generation"]["host_skill"] = args.host_skill
+    if args.target_resolution:
+        cfg["generation"]["target_resolution"] = args.target_resolution
+    if args.detail_level:
+        cfg["generation"]["detail_level"] = args.detail_level
     for key in ("azimuth", "elevation", "fov_deg", "framing", "projection"):
         value = getattr(args, key, None)
         if value is not None:
@@ -787,6 +801,9 @@ def prepare_run(
             aggregate_request = {
                 "backend": "official_host_image_generation_skill_or_tool",
                 "raw_api_required": False,
+                "host_skill": str(config["generation"].get("host_skill", "imagegen")),
+                "target_resolution": str(config["generation"].get("target_resolution", "4k")),
+                "detail_level": str(config["generation"].get("detail_level", "high")),
                 "view_set": "all",
                 "view_count": len(view_bundles),
                 "candidate_count_per_view": int(config["generation"]["candidates"]),
@@ -796,6 +813,7 @@ def prepare_run(
                 "output_format": config["generation"]["output_format"],
                 "views": view_bundles,
                 "instruction": "Run the official image-generation handoff independently for every view bundle; preserve each view's CAD camera and never merge view directions into one candidate.",
+                "resolution_policy": "Request the target resolution for every view; record actual dimensions if the host cannot expose exact 4K control.",
             }
             _write_json(planning_dir / "view_set.json", {"view_set": "all", "views": view_bundles})
             _write_json(planning_dir / "imagegen_request.json", aggregate_request)
@@ -804,6 +822,10 @@ def prepare_run(
                 launcher=Path(__file__).resolve().parent / "run.py",
                 view_bundles=view_bundles,
                 candidate_count=int(config["generation"]["candidates"]),
+                host_skill=str(config["generation"].get("host_skill", "imagegen")),
+                target_resolution=str(config["generation"].get("target_resolution", "4k")),
+                quality=str(config["generation"].get("quality", "high")),
+                detail_level=str(config["generation"].get("detail_level", "high")),
             )
         run_manifest["view_count"] = len(view_bundles)
         run_manifest["view_bundles"] = view_bundles
@@ -873,6 +895,9 @@ def _build_parser() -> argparse.ArgumentParser:
     options.add_argument("--candidates", type=int)
     options.add_argument("--aspect-ratio", choices=["auto", "1:1", "4:3", "3:4", "16:9", "9:16"])
     options.add_argument("--quality", choices=["auto", "draft", "standard", "high"])
+    options.add_argument("--host-skill", choices=["imagegen", "auto"], help="Official host Skill; imagegen is the default")
+    options.add_argument("--target-resolution", choices=["auto", "2k", "4k"], help="Target host output resolution; 4k is the default")
+    options.add_argument("--detail-level", choices=["standard", "high"], help="Requested visual detail; high is the default")
     return parser
 
 

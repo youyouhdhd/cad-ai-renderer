@@ -436,11 +436,17 @@ def run_self_test(output_dir: str | Path) -> dict[str, Any]:
         finalize_argv = handoff.get("finalization", {}).get("command_argv_template", [])
         delegation_ok = (
             request.get("raw_api_required") is False
+            and request.get("host_skill") == "imagegen"
+            and request.get("target_resolution") == "4k"
+            and request.get("detail_level") == "high"
             and request.get("candidate_count") == 4
             and request.get("candidate_ids") == ["C01", "C02", "C03", "C04"]
             and len(request.get("input_images", [])) >= 4
             and manifest.get("raw_image_api_used") is False
             and handoff.get("stage") == "host_image_generation"
+            and handoff.get("image_generation", {}).get("host_skill") == "imagegen"
+            and handoff.get("image_generation", {}).get("target_resolution") == "4k"
+            and handoff.get("image_generation", {}).get("quality") == "high"
             and "stage" in handoff.get("candidate_staging", {}).get("command_argv_template", [])
             and "finalize" in finalize_argv
             and "--candidate" not in finalize_argv

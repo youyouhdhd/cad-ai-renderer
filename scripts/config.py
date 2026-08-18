@@ -202,9 +202,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "transparent_aux": False,
     },
     "generation": {
+        "host_skill": "imagegen",
         "candidates": 4,
         "aspect_ratio": "1:1",
         "quality": "high",
+        "target_resolution": "4k",
+        "detail_level": "high",
         "output_format": "png",
         "max_retries": 1,
     },
@@ -232,6 +235,9 @@ ALLOWED_CONVERTERS = {"auto", "cadquery", "freecad", "passthrough"}
 ALLOWED_AUX_BACKENDS = {"auto", "vtk"}
 ALLOWED_OUTPUT_FORMATS = {"png", "jpeg", "webp"}
 ALLOWED_QUALITIES = {"auto", "draft", "standard", "high"}
+ALLOWED_HOST_SKILLS = {"imagegen", "auto"}
+ALLOWED_TARGET_RESOLUTIONS = {"auto", "2k", "4k"}
+ALLOWED_DETAIL_LEVELS = {"standard", "high"}
 ALLOWED_ASPECT_RATIOS = {"auto", "1:1", "4:3", "3:4", "16:9", "9:16"}
 ALLOWED_REFERENCE_ROLES = {
     "camera",
@@ -388,8 +394,11 @@ def validate_config(cfg: Mapping[str, Any], require_files: bool = True) -> None:
     candidates = int(generation.get("candidates", 4))
     if not 1 <= candidates <= 10:
         raise ConfigError("generation.candidates must be between 1 and 10")
+    _require_choice(generation.get("host_skill", "imagegen"), ALLOWED_HOST_SKILLS, "generation.host_skill")
     _require_choice(generation.get("aspect_ratio"), ALLOWED_ASPECT_RATIOS, "generation.aspect_ratio")
     _require_choice(generation.get("quality"), ALLOWED_QUALITIES, "generation.quality")
+    _require_choice(generation.get("target_resolution", "4k"), ALLOWED_TARGET_RESOLUTIONS, "generation.target_resolution")
+    _require_choice(generation.get("detail_level", "high"), ALLOWED_DETAIL_LEVELS, "generation.detail_level")
     _require_choice(generation.get("output_format"), ALLOWED_OUTPUT_FORMATS, "generation.output_format")
     if int(generation.get("max_retries", 1)) not in {0, 1}:
         raise ConfigError("generation.max_retries must be 0 or 1")
