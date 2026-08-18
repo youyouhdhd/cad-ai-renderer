@@ -19,14 +19,14 @@ jobs:
         uses: actions/github-script@v9
         env:
           RELEASE_TAG: ${{ github.ref_name }}
-          RELEASE_NOTES_FILE: .github/release-notes/v0.1.0.md
         with:
           github-token: ${{ github.token }}
           script: |
             const fs = require('fs');
             const { owner, repo } = context.repo;
             const tag = process.env.RELEASE_TAG;
-            const body = fs.readFileSync(process.env.RELEASE_NOTES_FILE, 'utf8');
+            const notesPath = `.github/release-notes/${tag}.md`;
+            const body = fs.readFileSync(notesPath, 'utf8');
 
             try {
               const existing = await github.rest.repos.getReleaseByTag({ owner, repo, tag });

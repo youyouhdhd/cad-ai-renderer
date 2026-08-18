@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: "If you use CAD AI Renderer in academic or technical work, please cite this repository."
 title: "CAD AI Renderer"
-version: "0.1.0"
+version: "0.2.0"
 date-released: "2026-08-18"
 type: software
 license: MIT
