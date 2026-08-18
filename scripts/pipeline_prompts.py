@@ -53,12 +53,17 @@ def camera_selection_prompt(
     view_records: Sequence[Mapping[str, Any]],
     project_description: str,
     references: Sequence[Mapping[str, Any]],
+    default_multi_view: bool = False,
 ) -> str:
     view_summary = [
         {
             "view_id": item["view_id"],
+            "label": item.get("label", item["view_id"]),
+            "view_type": item.get("view_type", "grid"),
+            "axis": item.get("axis"),
             "azimuth": item["azimuth"],
             "elevation": item["elevation"],
+            "projection": item.get("projection", "perspective"),
         }
         for item in view_records
     ]
@@ -70,9 +75,14 @@ def camera_selection_prompt(
         }
         for index, ref in enumerate(references)
     ]
+    multi_view_policy = (
+        "If the user did not specify an output viewpoint and no reliable reference fixes one, preserve the full default view set. Return `view_set: all` and a `selected_view_ids` list containing every required principal and axonometric view; do not collapse the job to one hero angle."
+        if default_multi_view
+        else "If one camera is required, select the clearest available view and do not invent a semantic front/back label that the CAD coordinate system cannot support."
+    )
     return f"""Act as the camera director for a CAD-to-image rendering workflow.
 
-Image 1 is a contact sheet of deterministic CAD views labeled V01, V02, and so on.
+Image 1 is a contact sheet of deterministic CAD views with the labels listed below.
 Images 2 onward are optional user references.
 
 Project intent:
@@ -84,13 +94,14 @@ Available views:
 Reference roles:
 {json.dumps(reference_summary, indent=2, ensure_ascii=False)}
 
-Select the view that best matches any reliable camera/composition evidence. If no reference fixes the
-camera, choose a clear three-quarter product view that exposes defining geometry and avoids accidental
-occlusion. Do not change the object's geometry for aesthetic reasons.
+Select the view or view set that best matches any reliable camera/composition evidence. {multi_view_policy}
+Do not change the object's geometry for aesthetic reasons.
 
 Return JSON:
 {{
   "selected_view_id": "V02",
+  "selected_view_ids": ["front", "right", "back", "left", "top", "bottom"],
+  "view_set": "all",
   "azimuth": 45.0,
   "elevation": 30.0,
   "projection": "perspective",
@@ -101,8 +112,9 @@ Return JSON:
   "reference_camera_detected": false
 }}
 
-Prefer an available view. Allow at most a small correction of 12 degrees. Keep fov_deg from 24 to 75
-and framing from 0.65 to 0.90.
+Prefer available views. For a single view, allow at most a small correction of 12 degrees. Keep fov_deg
+from 24 to 75 and framing from 0.65 to 0.90. Use coordinate-axis labels as orientation evidence when
+the CAD model has no user-defined semantic front.
 """
 
 

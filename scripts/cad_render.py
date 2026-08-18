@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 import traceback
 from datetime import datetime, timezone
@@ -22,9 +23,10 @@ from config import (
     config_fingerprint,
     dump_resolved_config,
     load_config,
+    product_view_specs,
     validate_config,
 )
-from host_handoff import write_camera_handoff, write_generation_handoff
+from host_handoff import write_camera_handoff, write_generation_handoff, write_multi_generation_handoff
 from input_discovery import InputDiscoveryError, discover_inputs
 from pipeline_prompts import (
     build_generation_prompt,
@@ -97,13 +99,82 @@ def _camera_from_view(
     plan.update(
         {
             "selected_view_id": view_id,
+            "view_label": match.get("label"),
+            "view_type": match.get("view_type"),
+            "axis": match.get("axis"),
             "azimuth": float(match["azimuth"]),
             "elevation": float(match["elevation"]),
+            "projection": match.get("projection", base.get("projection", "perspective")),
             "source": "host_selected_view_grid",
             "rationale": "Selected from the deterministic view grid by the host model or user.",
         }
     )
     return _sanitize_camera_plan(plan, base)
+
+
+def _configured_view_specs(config: Mapping[str, Any]) -> list[dict[str, Any]] | None:
+    camera = config["camera"]
+    if str(camera.get("view_set", "all")) != "all":
+        return None
+    return product_view_specs(camera.get("view_ids"))
+
+
+def _resolve_camera_plans(
+    view_records: Sequence[Mapping[str, Any]],
+    base_camera: Mapping[str, Any],
+    config: Mapping[str, Any],
+    *,
+    view_id: str | None,
+    camera_plan_path: str | Path | None,
+) -> list[dict[str, Any]]:
+    """Resolve one or many camera plans without making up a semantic front view."""
+    if camera_plan_path:
+        raw_plan = _read_json(camera_plan_path)
+        if not isinstance(raw_plan, Mapping):
+            raise ConfigError("Camera-plan JSON must be an object")
+        requested_ids = raw_plan.get("selected_view_ids") or raw_plan.get("view_ids")
+        if raw_plan.get("view_set") == "all" or requested_ids:
+            if requested_ids is None:
+                requested_ids = [str(item.get("view_id")) for item in view_records]
+            if not isinstance(requested_ids, list) or not requested_ids:
+                raise ConfigError("A multi-view camera plan must contain a non-empty selected_view_ids list")
+            plans: list[dict[str, Any]] = []
+            for selected_id in requested_ids:
+                plan = _camera_from_view(view_records, str(selected_id), base_camera)
+                plan["source"] = raw_plan.get("source", "host_camera_analysis")
+                if raw_plan.get("rationale"):
+                    plan["rationale"] = raw_plan["rationale"]
+                plans.append(plan)
+            return plans
+        selected_id = raw_plan.get("selected_view_id")
+        plan = _camera_from_view(view_records, str(selected_id), base_camera) if selected_id else dict(base_camera)
+        plan.update({key: value for key, value in raw_plan.items() if value is not None})
+        plan["source"] = raw_plan.get("source", "host_camera_plan")
+        return [_sanitize_camera_plan(plan, base_camera)]
+
+    if view_id:
+        return [_camera_from_view(view_records, view_id, base_camera)]
+
+    if str(config["camera"].get("view_set", "all")) == "all":
+        plans = []
+        for record in view_records:
+            plan = _camera_from_view(view_records, str(record["view_id"]), base_camera)
+            plan["source"] = "default_product_view_set"
+            plan["rationale"] = "No output viewpoint was specified; preserve broad directional coverage."
+            plans.append(plan)
+        return plans
+
+    return [
+        _sanitize_camera_plan(
+            {
+                **base_camera,
+                "selected_view_id": None,
+                "source": "configured_default",
+                "rationale": "No host-selected camera plan was supplied; used the configured default.",
+            },
+            base_camera,
+        )
+    ]
 
 
 def _merge_reference_roles(
@@ -312,6 +383,7 @@ def _build_report(
     status: str,
     warnings: Sequence[str],
     grid_only: bool,
+    view_bundles: Sequence[Mapping[str, Any]] | None = None,
 ) -> str:
     lines = [
         "# CAD AI Renderer Preparation Report",
@@ -330,13 +402,21 @@ def _build_report(
             [
                 "## Camera",
                 "",
-                f"Selected view: {camera_plan.get('selected_view_id', 'custom/default')}",
+                f"Selected view: {camera_plan.get('view_label') or camera_plan.get('selected_view_id', 'custom/default')}",
                 f"Azimuth/elevation: {camera_plan.get('azimuth')} / {camera_plan.get('elevation')}",
                 f"Projection/FOV: {camera_plan.get('projection')} / {camera_plan.get('fov_deg')}",
                 f"Source: {camera_plan.get('source', '')}",
                 "",
             ]
         )
+    if view_bundles:
+        lines.extend(["## View set", "", f"Prepared view bundles: {len(view_bundles)}", ""])
+        for bundle in view_bundles:
+            lines.append(
+                f"- `{bundle.get('view_id')}` — {bundle.get('view_label', '')}: "
+                f"`{Path(str(bundle.get('root'))).resolve() / 'final' / 'best.png'}` after visual QA"
+            )
+        lines.append("")
     if grid_only:
         lines.extend(
             [
@@ -368,6 +448,132 @@ def _build_report(
         ]
     )
     return "\n".join(lines)
+
+
+def _prepare_view_bundle(
+    renderer: VTKAnchorRenderer,
+    model_manifest: Mapping[str, Any],
+    config: Mapping[str, Any],
+    discovery: Mapping[str, Any],
+    view_root: str | Path,
+    camera_plan: Mapping[str, Any],
+    references: Sequence[Mapping[str, Any]],
+    render_brief_path: str | Path | None,
+    strict_geometry: bool,
+    shared_glb: str | Path,
+) -> dict[str, Any]:
+    """Render one camera bundle and write its independent host handoff."""
+    root = Path(view_root).expanduser().resolve()
+    layout = output_layout(root, create=True)
+    planning_dir = layout["planning"]
+    aux_dir = layout["auxiliary"]
+    dump_resolved_config(config, root / "resolved_project.yaml")
+    _write_json(root / "input_discovery.json", discovery)
+    _write_json(planning_dir / "camera_plan.json", camera_plan)
+
+    aux_result = renderer.render_auxiliary_set(aux_dir, dict(camera_plan))
+    aux_files = aux_result["files"]
+    _write_json(aux_dir / "model_manifest.json", model_manifest)
+    shared_path = Path(shared_glb).expanduser().resolve()
+    model_copy = aux_dir / "model.glb"
+    if shared_path != model_copy.resolve():
+        shutil.copy2(shared_path, model_copy)
+
+    brief_labels = [
+        "CAD shaded color preview; pseudo-colors may be part IDs",
+        "CAD lineart",
+        "CAD normal map",
+        "CAD depth map",
+    ]
+    (planning_dir / "render_brief_prompt.txt").write_text(
+        render_brief_prompt(
+            model_manifest,
+            config["project"].get("description", ""),
+            references,
+            brief_labels,
+        ),
+        encoding="utf-8",
+    )
+    if render_brief_path:
+        brief = _read_json(render_brief_path)
+        brief["source"] = brief.get("source", "host_visual_analysis")
+    else:
+        brief = _deterministic_brief(
+            model_manifest,
+            config["project"].get("description", ""),
+            references,
+        )
+    _write_json(planning_dir / "render_brief.json", brief)
+
+    generation_inputs, input_roles = _build_generation_inputs(
+        aux_files,
+        references,
+        config["geometry"]["anchor_mode"],
+    )
+    _write_json(planning_dir / "input_roles.json", input_roles)
+    generation_prompt = build_generation_prompt(
+        brief,
+        input_roles,
+        config["project"].get("description", ""),
+        strict_geometry=strict_geometry,
+    )
+    (planning_dir / "final_prompt.txt").write_text(generation_prompt, encoding="utf-8")
+    candidate_count = int(config["generation"]["candidates"])
+    candidate_ids = [f"C{index:02d}" for index in range(1, candidate_count + 1)]
+    imagegen_request = {
+        "backend": "official_host_image_generation_skill_or_tool",
+        "raw_api_required": False,
+        "view_id": camera_plan.get("selected_view_id"),
+        "view_label": camera_plan.get("view_label"),
+        "view_type": camera_plan.get("view_type"),
+        "candidate_count": candidate_count,
+        "candidate_ids": candidate_ids,
+        "aspect_ratio": config["generation"]["aspect_ratio"],
+        "quality": config["generation"]["quality"],
+        "output_format": config["generation"]["output_format"],
+        "prompt_path": str(planning_dir / "final_prompt.txt"),
+        "input_images": [str(path) for path in generation_inputs],
+        "input_roles_path": str(planning_dir / "input_roles.json"),
+        "instruction": "Invoke the host's official image-generation capability. Prefer one multi-output invocation; otherwise make separate invocations with the same ordered inputs and prompt.",
+    }
+    _write_json(planning_dir / "imagegen_request.json", imagegen_request)
+    write_generation_handoff(
+        root,
+        launcher=Path(__file__).resolve().parent / "run.py",
+        imagegen_request=imagegen_request,
+    )
+
+    view_manifest = {
+        "pipeline_version": PIPELINE_VERSION,
+        "output_contract_version": "2.2",
+        "status": "prepared_for_image_generation",
+        "stage": "local_geometry_preparation",
+        "view_id": camera_plan.get("selected_view_id"),
+        "view_label": camera_plan.get("view_label"),
+        "generation_backend": "host_official_image_generation_skill",
+        "raw_image_api_used": False,
+        "paths": manifest_paths(layout),
+        "steps": [
+            {"name": "auxiliary_passes", "status": "ok", "at": _now()},
+            {"name": "image_generation", "status": "delegated_to_host_tool", "at": _now()},
+        ],
+        "finished_at": _now(),
+    }
+    _write_json(root / "run_manifest.json", view_manifest)
+    (layout["final"] / "report.md").write_text(
+        _build_report(model_manifest, camera_plan, view_manifest["status"], [], False),
+        encoding="utf-8",
+    )
+    return {
+        "view_id": camera_plan.get("selected_view_id"),
+        "view_label": camera_plan.get("view_label") or camera_plan.get("selected_view_id"),
+        "view_type": camera_plan.get("view_type"),
+        "root": str(root),
+        "camera_plan": dict(camera_plan),
+        "imagegen_request": str(planning_dir / "imagegen_request.json"),
+        "host_handoff": str(planning_dir / "host_handoff.json"),
+        "candidate_ids": candidate_ids,
+    }
 
 
 def _load_or_build_config(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -493,6 +699,7 @@ def prepare_run(
             base_camera,
             azimuths=config["camera"]["view_grid_azimuths"],
             elevations=config["camera"]["view_grid_elevations"],
+            view_specs=_configured_view_specs(config),
         )
         view_records = view_result["views"]
         references = _merge_reference_roles(config["project"]["references"], reference_roles_path)
@@ -502,7 +709,12 @@ def prepare_run(
             encoding="utf-8",
         )
         (planning_dir / "camera_selection_prompt.txt").write_text(
-            camera_selection_prompt(view_records, config["project"].get("description", ""), references),
+            camera_selection_prompt(
+                view_records,
+                config["project"].get("description", ""),
+                references,
+                default_multi_view=str(config["camera"].get("view_set", "all")) == "all",
+            ),
             encoding="utf-8",
         )
         run_manifest["steps"].append({"name": "view_grid", "status": "ok", "at": _now()})
@@ -528,98 +740,86 @@ def prepare_run(
             _log(f"View-grid stage complete: {view_result['view_grid']}")
             return run_manifest
 
-        if camera_plan_path:
-            raw_plan = _read_json(camera_plan_path)
-            selected_id = raw_plan.get("selected_view_id") if isinstance(raw_plan, Mapping) else None
-            camera_plan = _camera_from_view(view_records, str(selected_id), base_camera) if selected_id else dict(base_camera)
-            camera_plan.update({key: value for key, value in raw_plan.items() if value is not None})
-            camera_plan["source"] = raw_plan.get("source", "host_camera_plan")
-            camera_plan = _sanitize_camera_plan(camera_plan, base_camera)
-        elif view_id:
-            camera_plan = _camera_from_view(view_records, view_id, base_camera)
-        else:
-            camera_plan = _sanitize_camera_plan(
-                {
-                    **base_camera,
-                    "selected_view_id": None,
-                    "source": "configured_default",
-                    "rationale": "No host-selected camera plan was supplied; used the configured default.",
-                },
-                base_camera,
+        camera_plans = _resolve_camera_plans(
+            view_records,
+            base_camera,
+            config,
+            view_id=view_id,
+            camera_plan_path=camera_plan_path,
+        )
+        view_bundles: list[dict[str, Any]] = []
+        if len(camera_plans) == 1:
+            _log("Rendering lineart, mask, normal, depth, part ID, clay, and color preview")
+            view_bundles.append(
+                _prepare_view_bundle(
+                    renderer,
+                    model_manifest,
+                    config,
+                    discovery,
+                    output_dir,
+                    camera_plans[0],
+                    references,
+                    render_brief_path,
+                    strict_geometry,
+                    aux_dir / "model.glb",
+                )
             )
-        _write_json(planning_dir / "camera_plan.json", camera_plan)
-
-        _log("Rendering lineart, mask, normal, depth, part ID, clay, and color preview")
-        aux_result = renderer.render_auxiliary_set(aux_dir, camera_plan)
-        aux_files = aux_result["files"]
-        run_manifest["steps"].append({"name": "auxiliary_passes", "status": "ok", "at": _now()})
-
-        brief_labels = [
-            "CAD shaded color preview; pseudo-colors may be part IDs",
-            "CAD lineart",
-            "CAD normal map",
-            "CAD depth map",
-        ]
-        (planning_dir / "render_brief_prompt.txt").write_text(
-            render_brief_prompt(
-                model_manifest,
-                config["project"].get("description", ""),
-                references,
-                brief_labels,
-            ),
-            encoding="utf-8",
-        )
-        if render_brief_path:
-            brief = _read_json(render_brief_path)
-            brief["source"] = brief.get("source", "host_visual_analysis")
         else:
-            brief = _deterministic_brief(
-                model_manifest,
-                config["project"].get("description", ""),
-                references,
+            _log(f"Rendering {len(camera_plans)} default directional view bundles")
+            view_root = output_dir / "views"
+            for camera_plan in camera_plans:
+                selected_id = str(camera_plan.get("selected_view_id") or "view")
+                safe_id = "".join(char if char.isalnum() or char in "-_" else "_" for char in selected_id)
+                view_bundles.append(
+                    _prepare_view_bundle(
+                        renderer,
+                        model_manifest,
+                        config,
+                        discovery,
+                        view_root / (safe_id or "view"),
+                        camera_plan,
+                        references,
+                        render_brief_path,
+                        strict_geometry,
+                        aux_dir / "model.glb",
+                    )
+                )
+            aggregate_request = {
+                "backend": "official_host_image_generation_skill_or_tool",
+                "raw_api_required": False,
+                "view_set": "all",
+                "view_count": len(view_bundles),
+                "candidate_count_per_view": int(config["generation"]["candidates"]),
+                "total_candidate_count": len(view_bundles) * int(config["generation"]["candidates"]),
+                "aspect_ratio": config["generation"]["aspect_ratio"],
+                "quality": config["generation"]["quality"],
+                "output_format": config["generation"]["output_format"],
+                "views": view_bundles,
+                "instruction": "Run the official image-generation handoff independently for every view bundle; preserve each view's CAD camera and never merge view directions into one candidate.",
+            }
+            _write_json(planning_dir / "view_set.json", {"view_set": "all", "views": view_bundles})
+            _write_json(planning_dir / "imagegen_request.json", aggregate_request)
+            write_multi_generation_handoff(
+                output_dir,
+                launcher=Path(__file__).resolve().parent / "run.py",
+                view_bundles=view_bundles,
+                candidate_count=int(config["generation"]["candidates"]),
             )
-        _write_json(planning_dir / "render_brief.json", brief)
-
-        generation_inputs, input_roles = _build_generation_inputs(
-            aux_files,
-            references,
-            config["geometry"]["anchor_mode"],
-        )
-        _write_json(planning_dir / "input_roles.json", input_roles)
-        generation_prompt = build_generation_prompt(
-            brief,
-            input_roles,
-            config["project"].get("description", ""),
-            strict_geometry=strict_geometry,
-        )
-        (planning_dir / "final_prompt.txt").write_text(generation_prompt, encoding="utf-8")
-        candidate_count = int(config["generation"]["candidates"])
-        candidate_ids = [f"C{index:02d}" for index in range(1, candidate_count + 1)]
-        imagegen_request = {
-            "backend": "official_host_image_generation_skill_or_tool",
-            "raw_api_required": False,
-            "candidate_count": candidate_count,
-            "candidate_ids": candidate_ids,
-            "aspect_ratio": config["generation"]["aspect_ratio"],
-            "quality": config["generation"]["quality"],
-            "output_format": config["generation"]["output_format"],
-            "prompt_path": str(planning_dir / "final_prompt.txt"),
-            "input_images": [str(path) for path in generation_inputs],
-            "input_roles_path": str(planning_dir / "input_roles.json"),
-            "instruction": "Invoke the host's official image-generation capability. Prefer one multi-output invocation; otherwise make separate invocations with the same ordered inputs and prompt.",
-        }
-        _write_json(planning_dir / "imagegen_request.json", imagegen_request)
-        write_generation_handoff(
-            output_dir,
-            launcher=Path(__file__).resolve().parent / "run.py",
-            imagegen_request=imagegen_request,
-        )
-
+        run_manifest["view_count"] = len(view_bundles)
+        run_manifest["view_bundles"] = view_bundles
         run_manifest["status"] = "prepared_for_image_generation"
         run_manifest["finished_at"] = _now()
+        run_manifest["steps"].append({"name": "view_bundles", "status": "ok", "at": _now()})
         run_manifest["steps"].append({"name": "image_generation", "status": "delegated_to_host_tool", "at": _now()})
         (final_dir / "report.md").write_text(
-            _build_report(model_manifest, camera_plan, run_manifest["status"], run_manifest["warnings"], False),
+            _build_report(
+                model_manifest,
+                view_bundles[0]["camera_plan"] if len(view_bundles) == 1 else None,
+                run_manifest["status"],
+                run_manifest["warnings"],
+                False,
+                view_bundles if len(view_bundles) > 1 else None,
+            ),
             encoding="utf-8",
         )
         _write_json(output_dir / "run_manifest.json", run_manifest)

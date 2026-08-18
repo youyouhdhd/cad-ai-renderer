@@ -8,7 +8,7 @@ import json
 import math
 import os
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 import cv2
 import numpy as np
@@ -446,8 +446,9 @@ class VTKAnchorRenderer:
         self,
         output_dir: str | Path,
         base_spec: dict[str, Any],
-        azimuths: Iterable[float],
-        elevations: Iterable[float],
+        azimuths: Iterable[float] | None = None,
+        elevations: Iterable[float] | None = None,
+        view_specs: Sequence[Mapping[str, Any]] | None = None,
         thumb_size: int = 320,
     ) -> dict[str, Any]:
         output = Path(output_dir)
@@ -460,28 +461,55 @@ class VTKAnchorRenderer:
         records: list[dict[str, Any]] = []
         paths: list[Path] = []
         labels: list[str] = []
-        index = 1
-        for elevation in elevations:
-            for azimuth in azimuths:
-                spec = dict(base_spec)
-                spec.update({"azimuth": float(azimuth), "elevation": float(elevation)})
-                camera_info = self.set_camera(spec)
-                image = self._capture_rgba()[..., :3]
-                path = view_dir / f"view_{index:02d}.png"
-                _write_png(image, path)
-                label = f"V{index:02d}  az {float(azimuth):g}  el {float(elevation):g}"
-                records.append(
-                    {
-                        "view_id": f"V{index:02d}",
-                        "path": str(path),
-                        "azimuth": float(azimuth),
-                        "elevation": float(elevation),
-                        "camera": camera_info,
-                    }
+        if view_specs is None:
+            planned_specs = [
+                {
+                    "view_id": f"V{index:02d}",
+                    "label": f"V{index:02d}  az {float(azimuth):g}  el {float(elevation):g}",
+                    "view_type": "grid",
+                    "azimuth": float(azimuth),
+                    "elevation": float(elevation),
+                }
+                for index, (elevation, azimuth) in enumerate(
+                    ((elevation, azimuth) for elevation in (elevations or []) for azimuth in (azimuths or [])),
+                    start=1,
                 )
-                paths.append(path)
-                labels.append(label)
-                index += 1
+            ]
+        else:
+            planned_specs = [dict(item) for item in view_specs]
+
+        for index, planned in enumerate(planned_specs, start=1):
+            view_id = str(planned.get("view_id") or f"V{index:02d}")
+            view_label = str(planned.get("label") or view_id)
+            spec = dict(base_spec)
+            spec.update(
+                {
+                    key: planned[key]
+                    for key in ("azimuth", "elevation", "projection", "fov_deg", "framing", "roll", "target", "position", "up")
+                    if planned.get(key) is not None
+                }
+            )
+            camera_info = self.set_camera(spec)
+            image = self._capture_rgba()[..., :3]
+            safe_view_id = "".join(char if char.isalnum() or char in "-_" else "_" for char in view_id)
+            file_stem = safe_view_id or f"{index:02d}"
+            path = view_dir / f"view_{file_stem}.png"
+            _write_png(image, path)
+            records.append(
+                {
+                    "view_id": view_id,
+                    "label": view_label,
+                    "view_type": str(planned.get("view_type", "grid")),
+                    "axis": planned.get("axis"),
+                    "path": str(path),
+                    "azimuth": float(spec.get("azimuth", 35.0)),
+                    "elevation": float(spec.get("elevation", 22.0)),
+                    "projection": str(spec.get("projection", "perspective")),
+                    "camera": camera_info,
+                }
+            )
+            paths.append(path)
+            labels.append(view_label)
         make_contact_sheet(
             paths,
             output / "view_grid.png",

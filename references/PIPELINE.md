@@ -8,12 +8,12 @@ Conversation attachments
   -> automatic compatible-Python bootstrap
   -> resumable dedicated virtual environment
   -> STEP/mesh to GLB
-  -> deterministic view grid
-  -> host camera selection
-  -> auxiliary passes
+  -> deterministic directional view grid
+  -> host camera selection or default all-view expansion
+  -> per-view auxiliary passes
   -> host reference analysis and render brief
   -> official image-generation skill/tool
-  -> four candidates
+  -> four candidates per view
   -> candidate staging and local diagnostics (no final image)
   -> host visual QA
   -> visual-QA-backed final selection and idempotent report
@@ -41,6 +41,24 @@ Write `planning/camera_plan.host.json`:
 ```
 
 Prefer `selected_view_id`. Small angle refinements are acceptable when justified. Keep FOV from 24 to 75 and framing from 0.65 to 0.90.
+
+When no output viewpoint is specified, the default `camera.view_set: all` expands to fourteen named views:
+
+- `front`, `right`, `back`, `left`, `top`, and `bottom` principal views using the `+X`, `+Y`, `-X`, `-Y`, `+Z`, and `-Z` coordinate conventions.
+- Four upper and four lower axonometric views covering all horizontal quadrants.
+
+The host may explicitly request a subset with `selected_view_ids`. A multi-view camera plan uses this shape:
+
+```json
+{
+  "view_set": "all",
+  "selected_view_ids": ["front", "right", "back", "left", "top", "bottom"],
+  "rationale": "No reliable reference fixed a single output camera; preserve directional coverage.",
+  "source": "host_visual_analysis"
+}
+```
+
+The local preparation creates `views/<view-id>/` bundles. Each bundle has its own camera, auxiliary passes, prompt, candidates, visual QA, and final output; never mix cameras between bundles.
 
 ## Reference roles schema
 

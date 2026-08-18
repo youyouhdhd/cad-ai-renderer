@@ -21,6 +21,146 @@ except ImportError as exc:  # pragma: no cover
     raise SystemExit("PyYAML is required. Run through scripts/run.py to use the managed environment.") from exc
 
 
+DEFAULT_PRODUCT_VIEW_SPECS: tuple[dict[str, Any], ...] = (
+    {
+        "view_id": "front",
+        "label": "Front (+X) / 前视",
+        "view_type": "principal",
+        "axis": "+X",
+        "azimuth": 0.0,
+        "elevation": 0.0,
+        "projection": "orthographic",
+    },
+    {
+        "view_id": "right",
+        "label": "Right (+Y) / 右视",
+        "view_type": "principal",
+        "axis": "+Y",
+        "azimuth": 90.0,
+        "elevation": 0.0,
+        "projection": "orthographic",
+    },
+    {
+        "view_id": "back",
+        "label": "Back (-X) / 后视",
+        "view_type": "principal",
+        "axis": "-X",
+        "azimuth": 180.0,
+        "elevation": 0.0,
+        "projection": "orthographic",
+    },
+    {
+        "view_id": "left",
+        "label": "Left (-Y) / 左视",
+        "view_type": "principal",
+        "axis": "-Y",
+        "azimuth": 270.0,
+        "elevation": 0.0,
+        "projection": "orthographic",
+    },
+    {
+        "view_id": "top",
+        "label": "Top (+Z) / 俯视",
+        "view_type": "principal",
+        "axis": "+Z",
+        "azimuth": 0.0,
+        "elevation": 90.0,
+        "projection": "orthographic",
+    },
+    {
+        "view_id": "bottom",
+        "label": "Bottom (-Z) / 仰视",
+        "view_type": "principal",
+        "axis": "-Z",
+        "azimuth": 0.0,
+        "elevation": -90.0,
+        "projection": "orthographic",
+    },
+    {
+        "view_id": "front_right_axonometric_upper",
+        "label": "Front-right upper axonometric / 前右上轴测",
+        "view_type": "axonometric",
+        "axis": "+X +Y +Z",
+        "azimuth": 45.0,
+        "elevation": 30.0,
+        "projection": "perspective",
+    },
+    {
+        "view_id": "back_right_axonometric_upper",
+        "label": "Back-right upper axonometric / 后右上轴测",
+        "view_type": "axonometric",
+        "axis": "-X +Y +Z",
+        "azimuth": 135.0,
+        "elevation": 30.0,
+        "projection": "perspective",
+    },
+    {
+        "view_id": "back_left_axonometric_upper",
+        "label": "Back-left upper axonometric / 后左上轴测",
+        "view_type": "axonometric",
+        "axis": "-X -Y +Z",
+        "azimuth": 225.0,
+        "elevation": 30.0,
+        "projection": "perspective",
+    },
+    {
+        "view_id": "front_left_axonometric_upper",
+        "label": "Front-left upper axonometric / 前左上轴测",
+        "view_type": "axonometric",
+        "axis": "+X -Y +Z",
+        "azimuth": 315.0,
+        "elevation": 30.0,
+        "projection": "perspective",
+    },
+    {
+        "view_id": "front_right_axonometric_lower",
+        "label": "Front-right lower axonometric / 前右下轴测",
+        "view_type": "axonometric",
+        "axis": "+X +Y -Z",
+        "azimuth": 45.0,
+        "elevation": -30.0,
+        "projection": "perspective",
+    },
+    {
+        "view_id": "back_right_axonometric_lower",
+        "label": "Back-right lower axonometric / 后右下轴测",
+        "view_type": "axonometric",
+        "axis": "-X +Y -Z",
+        "azimuth": 135.0,
+        "elevation": -30.0,
+        "projection": "perspective",
+    },
+    {
+        "view_id": "back_left_axonometric_lower",
+        "label": "Back-left lower axonometric / 后左下轴测",
+        "view_type": "axonometric",
+        "axis": "-X -Y -Z",
+        "azimuth": 225.0,
+        "elevation": -30.0,
+        "projection": "perspective",
+    },
+    {
+        "view_id": "front_left_axonometric_lower",
+        "label": "Front-left lower axonometric / 前左下轴测",
+        "view_type": "axonometric",
+        "axis": "+X -Y -Z",
+        "azimuth": 315.0,
+        "elevation": -30.0,
+        "projection": "perspective",
+    },
+)
+
+
+def product_view_specs(view_ids: Sequence[str] | None = None) -> list[dict[str, Any]]:
+    """Return the named product-view preset, optionally narrowed by view ID."""
+    available = {str(item["view_id"]): item for item in DEFAULT_PRODUCT_VIEW_SPECS}
+    selected = list(available) if view_ids is None else [str(item) for item in view_ids]
+    unknown = [item for item in selected if item not in available]
+    if unknown:
+        raise ConfigError(f"camera.view_ids contains unsupported view IDs: {', '.join(unknown)}")
+    return [deepcopy(available[item]) for item in selected]
+
+
 DEFAULT_CONFIG: dict[str, Any] = {
     "project": {
         "name": "cad-ai-render",
@@ -40,6 +180,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "target": None,
         "position": None,
         "up": [0.0, 0.0, 1.0],
+        "view_set": "all",
+        "view_ids": None,
         "view_grid_azimuths": [0, 45, 90, 135, 180, 225, 270, 315],
         "view_grid_elevations": [15, 30],
     },
@@ -83,6 +225,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
 ALLOWED_ANCHOR_MODES = {"compact", "balanced", "max_geometry"}
 ALLOWED_CAMERA_MODES = {"auto", "reference", "manual"}
+ALLOWED_VIEW_SETS = {"all", "grid"}
 ALLOWED_PROJECTIONS = {"perspective", "orthographic"}
 ALLOWED_COLOR_MODES = {"auto", "original", "pseudo", "clay"}
 ALLOWED_CONVERTERS = {"auto", "cadquery", "freecad", "passthrough"}
@@ -253,6 +396,12 @@ def validate_config(cfg: Mapping[str, Any], require_files: bool = True) -> None:
 
     camera = cfg["camera"]
     _require_choice(camera.get("mode"), ALLOWED_CAMERA_MODES, "camera.mode")
+    _require_choice(camera.get("view_set", "all"), ALLOWED_VIEW_SETS, "camera.view_set")
+    view_ids = camera.get("view_ids")
+    if view_ids is not None:
+        if not isinstance(view_ids, list) or not view_ids or not all(isinstance(item, str) for item in view_ids):
+            raise ConfigError("camera.view_ids must be a non-empty list of strings when supplied")
+        product_view_specs(view_ids)
     _require_choice(camera.get("projection"), ALLOWED_PROJECTIONS, "camera.projection")
     if not 1.0 <= float(camera.get("fov_deg", 45)) <= 150.0:
         raise ConfigError("camera.fov_deg must be between 1 and 150")

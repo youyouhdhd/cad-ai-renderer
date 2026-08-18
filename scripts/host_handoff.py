@@ -179,3 +179,103 @@ def write_generation_handoff(
     ]
     (planning / "NEXT_STEPS.md").write_text("\n".join(markdown), encoding="utf-8")
     return payload
+
+
+def write_multi_generation_handoff(
+    run_dir: str | Path,
+    *,
+    launcher: str | Path,
+    view_bundles: Sequence[Mapping[str, Any]],
+    candidate_count: int,
+) -> dict[str, Any]:
+    """Write one aggregate handoff for independent multi-view generation bundles."""
+    root = Path(run_dir).expanduser().resolve()
+    planning = root / "planning"
+    launcher_path = str(Path(launcher).resolve())
+    views: list[dict[str, Any]] = []
+    for bundle in view_bundles:
+        view_root = Path(str(bundle["root"])).expanduser().resolve()
+        view_planning = view_root / "planning"
+        candidate_ids = [str(item) for item in bundle.get("candidate_ids", [])]
+        if not candidate_ids:
+            candidate_ids = [f"C{index:02d}" for index in range(1, candidate_count + 1)]
+        candidate_args: list[str] = []
+        for candidate_id in candidate_ids:
+            candidate_args.extend(["--candidate", f"{candidate_id}=<generated-image-{candidate_id}>"])
+        views.append(
+            {
+                "view_id": bundle.get("view_id"),
+                "view_label": bundle.get("view_label"),
+                "view_type": bundle.get("view_type"),
+                "run_dir": str(view_root),
+                "request": str(view_planning / "imagegen_request.json"),
+                "prompt": str(view_planning / "final_prompt.txt"),
+                "input_roles": str(view_planning / "input_roles.json"),
+                "candidate_ids": candidate_ids,
+                "candidate_staging": {
+                    "command_argv_template": [
+                        "python",
+                        launcher_path,
+                        "stage",
+                        "--run",
+                        str(view_root),
+                        *candidate_args,
+                    ],
+                    "contact_sheet": str(view_root / "candidates" / "contact_sheet.png"),
+                    "qa_prompt": str(view_planning / "qa_prompt.txt"),
+                    "visual_qa_template": str(view_planning / "visual_qa.template.json"),
+                },
+                "finalization": {
+                    "command_argv_template": [
+                        "python",
+                        launcher_path,
+                        "finalize",
+                        "--run",
+                        str(view_root),
+                        "--visual-qa",
+                        str(view_planning / "visual_qa.host.json"),
+                    ],
+                    "best_image": str(view_root / "final" / "best.png"),
+                    "report": str(view_root / "final" / "report.md"),
+                },
+            }
+        )
+    payload = {
+        "contract_version": "2.2",
+        "stage": "host_image_generation_multi_view",
+        "status": "prepared_for_image_generation",
+        "run_dir": str(root),
+        "view_count": len(views),
+        "candidate_count_per_view": int(candidate_count),
+        "views": views,
+        "notes": [
+            "Generate each view independently; never average, collage, or morph different camera directions into one candidate.",
+            "Each view has its own ordered CAD anchors, candidates, visual-QA file, and final/best.png output.",
+            "Stage and finalize each view with its own command templates after the host has inspected every full-resolution candidate.",
+        ],
+    }
+    _write_json(planning / "host_handoff.json", payload)
+    markdown = [
+        "# Host handoff: independent multi-view generation",
+        "",
+        f"Generate and review {len(views)} independent CAD-anchored view bundles.",
+        "",
+        "Do not combine view directions into a collage or use one view's beauty image as geometry evidence for another view.",
+        "",
+    ]
+    for index, view in enumerate(views, start=1):
+        markdown.extend(
+            [
+                f"{index}. **{view.get('view_label') or view.get('view_id')}** (`{view.get('view_id')}`): invoke `{view['request']}`, then use its stage and finalize argument arrays.",
+                f"   Final output after visual QA: `{view['finalization']['best_image']}`.",
+            ]
+        )
+    markdown.extend(
+        [
+            "",
+            "The aggregate `imagegen_request.json` lists every view. The local geometry score is diagnostic and must not replace host visual QA.",
+            "",
+        ]
+    )
+    (planning / "NEXT_STEPS.md").write_text("\n".join(markdown), encoding="utf-8")
+    return payload

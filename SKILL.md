@@ -1,6 +1,6 @@
 ---
 name: cad-ai-renderer
-description: Generate geometry-anchored industrial product renders from an attached STEP/STP CAD model or supported mesh plus optional reference images as a reusable Codex Skill. Use when Codex must inspect CAD geometry, create deterministic camera, silhouette, clay, line-art, depth, normal, and part-ID evidence, then guide GPT Image 2 or another host image-generation capability through candidate product visualization, camera matching, visual QA, and final selection while preserving visible proportions, topology, holes, seams, and part placement. Discover attachments automatically, self-initialize a dedicated CAD/VTK Python environment, use 3D only as geometry evidence, and delegate final rendering to the host rather than a raw API client.
+description: Generate geometry-anchored industrial product renders from an attached STEP/STP CAD model or supported mesh plus optional reference images as a reusable Codex Skill. Use when Codex must inspect CAD geometry, create deterministic multi-direction camera coverage or a specified camera, silhouette, clay, line-art, depth, normal, and part-ID evidence, then guide the host's official image-generation capability through high-detail candidate product visualization, camera matching, visual QA, and final selection while preserving visible proportions, topology, holes, seams, and part placement. Discover attachments automatically, self-initialize a dedicated CAD/VTK Python environment, use 3D only as geometry evidence, and delegate final rendering to the host rather than a raw API client.
 ---
 
 # CAD AI Renderer
@@ -92,7 +92,7 @@ python scripts/run.py preflight \
 
 Verify the model path, reference count, output write access, CadQuery/OCP, VTK, Pillow, OpenCV, and trimesh. Treat missing FreeCAD or Blender as warnings when the CadQuery plus VTK path works.
 
-### 3. Generate the camera grid first
+### 3. Generate broad camera coverage first
 
 Unless the user supplied an exact camera, run the camera-grid stage before final anchors:
 
@@ -112,7 +112,9 @@ Inspect these together:
 - The user's requested viewpoint.
 - `auxiliary/view_grid.json`.
 
-Choose a labeled view that exposes defining geometry and avoids accidental occlusion. Prefer a reliable reference camera when present; otherwise prefer a clear three-quarter view.
+The default named view set contains six principal views—front (+X), back (-X), left (-Y), right (+Y), top (+Z), and bottom (-Z)—plus eight upper/lower axonometric views. These are coordinate-axis conventions, not claims about semantic product front/back unless the user or a reliable reference establishes that mapping.
+
+If the user specifies an exact viewpoint, or a reliable reference fixes one camera, choose one labeled view that exposes defining geometry and avoids accidental occlusion. If no output viewpoint is specified, do not collapse the task to one hero angle: continue without `--view-id` or `--camera-plan` and let the default multi-view bundle render every named direction. Use `view_set: all` and `selected_view_ids` when writing a host camera plan explicitly.
 
 Write `planning/camera_plan.host.json` using the schema in `references/PIPELINE.md`. Do not ask the user to author it.
 
@@ -187,6 +189,8 @@ Generate and retain:
 - `camera.json`.
 - `model_manifest.json`.
 
+For the default multi-view path, the same auxiliary set is written under `views/<view-id>/` for every named view, with an independent camera plan and host handoff. Do not reuse one view's auxiliary images as another view's geometry evidence.
+
 Use `color_preview + clay + lineart` as the default balanced image-generation input set. This combination gives natural shaded form, component/color evidence, and crisp topology without overwhelming the image model with technical maps.
 
 Use anchor modes as follows:
@@ -199,7 +203,7 @@ Always output all auxiliary passes even when only a subset is sent to image gene
 
 ### 7. Invoke the official image-generation skill or tool
 
-Read:
+Read the per-view files when a multi-view bundle exists; otherwise read the root files:
 
 - `planning/imagegen_request.json`.
 - `planning/final_prompt.txt`.
@@ -207,7 +211,7 @@ Read:
 
 Pass the listed input images in exactly that order to the official image-generation capability. Keep each image's role explicit in the prompt.
 
-Generate four candidates by default. Prefer one official multi-output invocation. When the host capability returns one image per call, make four equivalent calls with the same prompt and ordered inputs. Do not create a collage as a candidate.
+Use the host's official `$imagegen` Skill by default when it is exposed. Generate four candidates per view by default. Prefer one official multi-output invocation for each view; when the host capability returns one image per call, make four equivalent calls with the same prompt and ordered inputs. For a multi-view run, generate each view independently. Do not create a collage, morph between cameras, or use one view's beauty image as another view's geometry evidence.
 
 Save the generated images as local files and assign IDs `C01` through `C04`. Follow `planning/host_handoff.json` and `planning/NEXT_STEPS.md`; these files contain the exact ordered inputs and stage/finalize argument templates.
 
@@ -226,7 +230,7 @@ python scripts/run.py stage \
   --candidate C04=/path/to/generated-4.png
 ```
 
-The stage command must return `awaiting_visual_qa`, create the contact sheet and QA prompt, and leave `final/best.*` and `final/selection.json` absent. Treat local edge and silhouette metrics as weak diagnostics only; never let them create a provisional best image.
+Run the stage command independently for each view directory in a multi-view run. The stage command must return `awaiting_visual_qa`, create the contact sheet and QA prompt, and leave `final/best.*` and `final/selection.json` absent. Treat local edge and silhouette metrics as weak diagnostics only; never let them create a provisional best image.
 
 ### 9. Perform visual QA with the host model
 
@@ -316,6 +320,12 @@ output/
     qa_prompt.txt
     visual_qa.json
     visual_qa.host.json             # when host analysis is used
+  views/                            # default when no output viewpoint is specified
+    <view-id>/
+      auxiliary/
+      planning/
+      candidates/
+      final/
   candidates/
     images/
     local_scores.json
@@ -333,7 +343,7 @@ Only visual-QA-backed finalization creates `final/best.*`. Rebuild `final/report
 
 Return links to at least:
 
-- `final/best.*`.
+- `final/best.*`, or every `views/<view-id>/final/best.*` after a multi-view run.
 - `candidates/contact_sheet.png`.
 - `auxiliary/view_grid.png`.
 - `auxiliary/color_preview.png`.
@@ -353,7 +363,7 @@ After installation or code changes, run the real-data test through the dedicated
 python scripts/run.py self-test --output ./cad-ai-renderer-self-test
 ```
 
-Require every local check to pass before packaging. The self-test creates real STEP fixtures, uses direct attachment-style discovery, renders all auxiliary passes, tests automatic bootstrap decisions, Windows-safe paths, candidate staging/finalization, and idempotent reporting, and verifies the absence of model locks and raw image API code. It cannot exercise a host-only image-generation tool from local Python.
+Require every local check to pass before packaging. The self-test creates real STEP fixtures, uses direct attachment-style discovery, renders named directional coverage and all auxiliary passes, tests automatic bootstrap decisions, Windows-safe paths, candidate staging/finalization, and idempotent reporting, and verifies the absence of model locks and raw image API code. It cannot exercise a host-only image-generation tool from local Python.
 
 ## References
 

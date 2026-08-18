@@ -18,7 +18,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
 from cad_render import prepare_run
-from config import ConfigError, build_direct_config, validate_config
+from config import ConfigError, build_direct_config, product_view_specs, validate_config
 from finalize_candidates import finalize
 from geometry_metrics import score_candidate
 from input_discovery import discover_inputs
@@ -305,7 +305,11 @@ def run_self_test(output_dir: str | Path) -> dict[str, Any]:
             references=discovery["references"],
             overrides={
                 "render": {"width": 384, "height": 384},
-                "camera": {"view_grid_azimuths": [0, 90], "view_grid_elevations": [15, 30]},
+                "camera": {
+                    "view_set": "grid",
+                    "view_grid_azimuths": [0, 90],
+                    "view_grid_elevations": [15, 30],
+                },
             },
         )
         grid_manifest = prepare_run(grid_config, discovery, grid_only=True)
@@ -318,6 +322,51 @@ def run_self_test(output_dir: str | Path) -> dict[str, Any]:
         if not grid_ok:
             raise RuntimeError("Grid-only stage failed")
 
+        multi_output = root / "multi_view_output"
+        multi_config = build_direct_config(
+            assembly_step,
+            multi_output,
+            description="Directional product-view coverage.",
+            references=discovery["references"],
+            overrides={
+                "render": {"width": 256, "height": 256},
+                "camera": {
+                    "view_set": "all",
+                    "view_ids": ["front", "top", "front_right_axonometric_upper"],
+                },
+                "generation": {"candidates": 1},
+            },
+        )
+        multi_manifest = prepare_run(multi_config, discovery)
+        default_view_ids = [item["view_id"] for item in product_view_specs()]
+        multi_view_ids = [item.get("view_id") for item in multi_manifest.get("view_bundles", [])]
+        multi_ok = (
+            multi_manifest["status"] == "prepared_for_image_generation"
+            and multi_manifest.get("view_count") == 3
+            and len(default_view_ids) == 14
+            and multi_view_ids == ["front", "top", "front_right_axonometric_upper"]
+            and (multi_output / AUXILIARY_DIRNAME / "view_grid.json").exists()
+            and (multi_output / "planning" / "imagegen_request.json").exists()
+            and (multi_output / "planning" / "host_handoff.json").exists()
+            and all(
+                (
+                    (multi_output / "views" / str(view_id) / AUXILIARY_DIRNAME / "color_preview.png").exists()
+                    and (multi_output / "views" / str(view_id) / "planning" / "imagegen_request.json").exists()
+                )
+                for view_id in multi_view_ids
+            )
+        )
+        report["checks"].append(
+            {
+                "name": "default_directional_multi_view_bundle",
+                "ok": multi_ok,
+                "default_view_count": len(default_view_ids),
+                "prepared_view_ids": multi_view_ids,
+            }
+        )
+        if not multi_ok:
+            raise RuntimeError("Default directional multi-view bundle failed")
+
         pipeline_output = root / "pipeline_output"
         config = build_direct_config(
             assembly_step,
@@ -326,7 +375,11 @@ def run_self_test(output_dir: str | Path) -> dict[str, Any]:
             references=discovery["references"],
             overrides={
                 "render": {"width": 384, "height": 384},
-                "camera": {"view_grid_azimuths": [0, 90], "view_grid_elevations": [15, 30]},
+                "camera": {
+                    "view_set": "grid",
+                    "view_grid_azimuths": [0, 90],
+                    "view_grid_elevations": [15, 30],
+                },
                 "geometry": {"converter": "cadquery", "anchor_mode": "balanced"},
                 "generation": {"candidates": 4, "aspect_ratio": "1:1", "quality": "high"},
             },
